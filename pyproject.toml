@@ -1,0 +1,96 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "taskchamber"
+version = "0.1.0"
+description = "Isolated agent tasks over MCP with pluggable runtimes."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["agent", "mcp", "sandbox", "sub-agent", "tool"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+dependencies = [
+    "mcp>=1.28.1,<2",
+    "python-dotenv>=1.2,<2",
+    "tomlkit>=0.13,<1",
+]
+
+[project.urls]
+Documentation = "https://github.com/gausshj/taskChamber/tree/main/docs"
+Homepage = "https://github.com/gausshj/taskChamber"
+Issues = "https://github.com/gausshj/taskChamber/issues"
+Repository = "https://github.com/gausshj/taskChamber"
+
+[project.scripts]
+taskchamber = "taskchamber.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["taskchamber"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/LICENSE",
+    "/README.md",
+    "/taskchamber",
+]
+
+[project.optional-dependencies]
+claude = [
+    "claude-agent-sdk==0.2.115",
+]
+
+[dependency-groups]
+dev = [
+    "claude-agent-sdk==0.2.115",
+    "anyio>=4,<5",
+    "mypy>=1.11,<2",
+    "pre-commit>=4.3,<5",
+    "pytest>=8,<10",
+    "ruff>=0.6,<1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# The SDK and pydantic re-export types through __init__/__all__; leave those alone.
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# Tests use anyio decorators and local stub classes; keep them readable.
+[[tool.mypy.overrides]]
+module = "tests.*"
+strict = false
+check_untyped_defs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = ["."]
