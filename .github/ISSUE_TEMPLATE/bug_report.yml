@@ -1,0 +1,153 @@
+name: Bug report
+description: Report reproducible incorrect or unexpected TaskChamber behavior
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve TaskChamber.
+
+        Keep this public report minimal and sanitized. Do not include API keys, tokens,
+        `.env` contents, Claude settings, credential-bearing or private provider URLs,
+        internal hostnames, personal absolute paths, prompts, source documents,
+        customer data, or full agent transcripts.
+
+        Do not disclose a security vulnerability in a public issue.
+
+  - type: checkboxes
+    id: initial-checks
+    attributes:
+      label: Initial checks
+      options:
+        - label: I searched open and closed issues for an existing report.
+          required: true
+        - label: I reproduced this with the latest release or current `main`, where practical.
+          required: true
+        - label: I reduced the report to a minimal example and used `FakeRuntime` where practical.
+          required: true
+        - label: I removed credentials, private URLs, internal paths, document contents, prompts, and agent transcripts.
+          required: true
+        - label: This report does not disclose a security vulnerability.
+          required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - MCP stdio transport
+        - CLI or project configuration
+        - TaskService or capability policy
+        - Document sources or document execution
+        - Runtime adapter
+        - Workspace staging or OS sandbox
+        - Packaging, installation, CI, or release
+        - Other or unknown
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: TaskChamber version
+      description: Provide the installed version or a public commit SHA.
+      placeholder: "Example: 0.1.0 or 2248c8f"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "Example: CPython 3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: operating-system
+    attributes:
+      label: Operating system
+      description: Use a generic OS name, version, and architecture; omit hostnames.
+      placeholder: "Example: Ubuntu 24.04 x86_64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - FakeRuntime
+        - Claude Agent SDK runtime
+        - External runtime adapter
+        - Not runtime-specific
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sandbox
+    attributes:
+      label: Sandbox mode
+      options:
+        - auto
+        - required
+        - Linux Bubblewrap
+        - macOS SandboxExec
+        - no sandbox
+        - not applicable
+        - unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+      description: Explain what failed and the smallest public context needed to understand it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: |
+        Provide the smallest commands and neutral configuration needed to reproduce the
+        problem. Replace private values with placeholders; never paste `.env` or settings files.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: sanitized-result
+    attributes:
+      label: Sanitized result metadata
+      description: |
+        If relevant, include only sanitized fields such as `status`, `error_code`,
+        `is_error`, `partial`, `truncated`, and sandbox activation booleans. Do not
+        paste full logs, tool inputs, prompts, documents, paths, environment values,
+        provider responses, or transcripts.
+      render: text
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional public context
+      description: Add only information that is safe and necessary to publish.
