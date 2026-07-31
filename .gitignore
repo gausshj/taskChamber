@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
 .DS_Store
 .idea/
