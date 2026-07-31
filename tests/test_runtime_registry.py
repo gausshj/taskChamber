@@ -36,12 +36,17 @@ def test_registry_constructs_a_registered_runtime(tmp_path: Path) -> None:
 
 def test_registry_rejects_duplicate_and_unknown_runtimes(tmp_path: Path) -> None:
     registry = RuntimeRegistry()
-    registry.register("custom", lambda _context: FakeRuntime())
+
+    def factory(_context: RuntimeFactoryContext) -> FakeRuntime:
+        return FakeRuntime()
+
+    registry.register("custom", factory)
+    missing_context = _context(tmp_path)
 
     with pytest.raises(ValueError, match="already registered"):
-        registry.register("custom", lambda _context: FakeRuntime())
+        registry.register("custom", factory)
     with pytest.raises(ValueError, match="available runtimes: custom"):
-        registry.create("missing", _context(tmp_path))
+        registry.create("missing", missing_context)
 
 
 def test_registry_loads_an_adapter_factory_by_import_target(tmp_path: Path) -> None:
