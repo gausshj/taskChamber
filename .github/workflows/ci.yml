@@ -101,6 +101,7 @@ jobs:
           use_oidc: true
           files: ./coverage.xml
           disable_search: true
+          disable_telem: true
           fail_ci_if_error: true
           flags: unittests
           name: taskchamber-python
@@ -113,6 +114,7 @@ jobs:
         with:
           files: ./coverage.xml
           disable_search: true
+          disable_telem: true
           fail_ci_if_error: true
           flags: unittests
           name: taskchamber-python
