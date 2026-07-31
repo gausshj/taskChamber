@@ -1,0 +1,117 @@
+name: Feature request
+description: Propose a general-purpose improvement to TaskChamber
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        TaskChamber is a provider-neutral MCP server for isolated, tool-shaped agent
+        tasks. Feature requests should describe a reusable open-source need rather
+        than a private deployment or downstream-project customization.
+
+        Do not include credentials, private provider URLs, internal hostnames,
+        personal paths, prompts, source documents, customer data, or agent transcripts.
+
+  - type: checkboxes
+    id: initial-checks
+    attributes:
+      label: Initial checks
+      options:
+        - label: I searched open and closed issues for the same request.
+          required: true
+        - label: I reviewed the public documentation and could not solve this with existing configuration or an external runtime adapter.
+          required: true
+        - label: This is a general TaskChamber use case, not a private downstream integration request.
+          required: true
+        - label: I removed private project, account, host, path, document, prompt, and transcript details.
+          required: true
+        - label: This request does not disclose a security vulnerability.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: General problem
+      description: Describe the user-facing problem and who encounters it, independently of a private deployment.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the public API or workflow you would like, with a neutral example if useful.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Proposed component
+      options:
+        - MCP tools or result contract
+        - TaskService or capability policy
+        - Project configuration or CLI
+        - Document source or document execution
+        - Bundled runtime adapter
+        - External runtime adapter interface
+        - Workspace staging or OS sandbox
+        - Packaging, CI, documentation, or release
+        - Unsure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: Would this change existing MCP tools, arguments, result fields, or runtime contracts?
+      options:
+        - No public contract change
+        - Backward-compatible addition
+        - Potentially breaking change
+        - Unsure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety-boundaries
+    attributes:
+      label: Safety boundaries affected
+      description: Select every boundary the proposal might change.
+      options:
+        - label: Filesystem or workspace access
+        - label: Document-source authorization
+        - label: Network access
+        - label: Credentials or provider routing
+        - label: Runtime tool permissions
+        - label: Recursive agents, MCP tools, or session state
+        - label: OS sandboxing or process isolation
+        - label: None of the above
+
+  - type: textarea
+    id: boundary-analysis
+    attributes:
+      label: Boundary and ownership analysis
+      description: |
+        Explain why this belongs in TaskChamber core or a bundled adapter instead of
+        downstream policy or an external adapter. If a safety boundary changes,
+        describe how the default remains least-privilege.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe existing configuration, adapters, or simpler designs you considered.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Suggested validation
+      description: Describe tests or interoperability checks that would demonstrate the feature safely.

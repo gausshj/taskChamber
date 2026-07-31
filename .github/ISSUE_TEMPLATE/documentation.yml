@@ -1,0 +1,87 @@
+name: Documentation improvement
+description: Report missing, unclear, or inaccurate public TaskChamber documentation
+title: "[Docs]: "
+labels:
+  - documentation
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation issues are public. Do not paste credentials, `.env` contents,
+        private provider URLs, internal hostnames, personal absolute paths, prompts,
+        source documents, customer data, logs, or agent transcripts.
+
+        Do not disclose a security vulnerability in a public issue.
+
+  - type: checkboxes
+    id: initial-checks
+    attributes:
+      label: Initial checks
+      options:
+        - label: I searched open and closed issues for the same documentation problem.
+          required: true
+        - label: I checked the latest version of the documentation on `main`.
+          required: true
+        - label: I removed private environment, project, account, path, document, prompt, and transcript details.
+          required: true
+        - label: This report does not disclose a security vulnerability.
+          required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Documentation location
+      description: Provide a public URL or repository-relative file and section.
+      placeholder: "Example: docs/POLICY_CONFIGURATION.md, Per-call narrowing"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Documentation category
+      options:
+        - Incorrect or outdated statement
+        - Missing explanation or example
+        - Unclear terminology or workflow
+        - Broken command, link, or formatting
+        - Isolation or security boundary wording
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current documentation problem
+      description: Explain what is wrong or unclear and how it affects a reader.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: Describe the correction, example, or structure that would resolve the problem.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: audience
+    attributes:
+      label: Primary audience
+      options:
+        - MCP users
+        - Server operators
+        - Runtime-adapter authors
+        - Contributors
+        - Security reviewers
+        - Other or mixed
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional public context
+      description: Add only neutral references or examples that are safe to publish.
