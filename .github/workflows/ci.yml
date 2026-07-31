@@ -84,7 +84,7 @@ jobs:
       - run: uv sync --locked --all-groups
       - name: Generate coverage report
         run: >-
-          uv run pytest -q
+          uv run --no-sync --locked --no-build pytest -q
           --cov=taskchamber
           --cov-branch
           --cov-report=term-missing
