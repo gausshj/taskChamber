@@ -457,10 +457,11 @@ def test_clean_launcher_fails_closed_on_an_unsupported_windows_host(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setattr("taskchamber.isolation.sandbox.POSIX_LAUNCHER_SUPPORTED", False)
+    isolated_workspace = IsolatedWorkspace(root=workspace, allowed_paths=(workspace,))
 
     with pytest.raises(ValueError, match="POSIX"):
         NoSandbox().prepare_cli_launcher(
-            IsolatedWorkspace(root=workspace, allowed_paths=(workspace,)),
+            isolated_workspace,
             executable="C:/claude.exe",
             config_dir=tmp_path / "config",
             launcher_dir=tmp_path / "launcher",
@@ -471,12 +472,12 @@ def test_native_sandboxes_reject_forwarded_paths_under_hidden_home() -> None:
     hidden = Path.home().resolve()
 
     NoSandbox().validate_readable_paths((hidden,))
+    bubblewrap = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
     with pytest.raises(ValueError, match="hidden"):
-        BubblewrapSandbox(bwrap="/usr/bin/bwrap").validate_readable_paths((hidden,))
+        bubblewrap.validate_readable_paths((hidden,))
+    macos_sandbox = MacOSSandboxExecSandbox(sandbox_exec="/usr/bin/sandbox-exec")
     with pytest.raises(ValueError, match="hidden"):
-        MacOSSandboxExecSandbox(sandbox_exec="/usr/bin/sandbox-exec").validate_readable_paths(
-            (hidden,)
-        )
+        macos_sandbox.validate_readable_paths((hidden,))
 
 
 def test_version_probe_cannot_create_the_main_launch_observation(tmp_path: Path) -> None:
@@ -581,10 +582,11 @@ def test_launcher_directory_cannot_be_nested_in_writable_config(tmp_path: Path) 
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o700)
     config_dir = tmp_path / "config"
+    isolated_workspace = IsolatedWorkspace(root=workspace, allowed_paths=(workspace,))
 
     with pytest.raises(ValueError, match="outside writable CLI config"):
         NoSandbox().prepare_wrapper(
-            IsolatedWorkspace(root=workspace, allowed_paths=(workspace,)),
+            isolated_workspace,
             executable=str(executable),
             config_dir=config_dir,
             launcher_dir=config_dir / "launcher",
@@ -592,7 +594,7 @@ def test_launcher_directory_cannot_be_nested_in_writable_config(tmp_path: Path) 
 
     with pytest.raises(ValueError, match="outside writable CLI config"):
         NoSandbox().prepare_wrapper(
-            IsolatedWorkspace(root=workspace, allowed_paths=(workspace,)),
+            isolated_workspace,
             executable=str(executable),
             config_dir=tmp_path / "launcher-root" / "config",
             launcher_dir=tmp_path / "launcher-root",
