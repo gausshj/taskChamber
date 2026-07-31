@@ -62,6 +62,7 @@ dev = [
     "mypy>=1.11,<2",
     "pre-commit>=4.3,<5",
     "pytest>=8,<10",
+    "pytest-cov>=6,<8",
     "ruff>=0.6,<1",
 ]
 
@@ -94,3 +95,15 @@ disallow_incomplete_defs = false
 testpaths = ["tests"]
 addopts = "-ra"
 pythonpath = ["."]
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["taskchamber"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.coverage.xml]
+output = "coverage.xml"

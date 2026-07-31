@@ -66,6 +66,59 @@ jobs:
       - run: uv run python -VV
       - run: uv run pytest -q
 
+  coverage:
+    name: Coverage (Ubuntu, Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.28"
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked --all-groups
+      - name: Generate coverage report
+        run: >-
+          uv run --no-sync --locked --no-build pytest -q
+          --cov=taskchamber
+          --cov-branch
+          --cov-report=term-missing
+          --cov-report=xml
+      # Fork PRs cannot request an OIDC token. Codecov accepts their public,
+      # unprotected branch uploads without credentials; Dependabot is skipped.
+      - name: Upload coverage to Codecov with OIDC
+        if: >-
+          github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository)
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          use_oidc: true
+          files: ./coverage.xml
+          disable_search: true
+          disable_telem: true
+          fail_ci_if_error: true
+          flags: unittests
+          name: taskchamber-python
+      - name: Upload fork coverage to Codecov without credentials
+        if: >-
+          github.actor != 'dependabot[bot]' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: ./coverage.xml
+          disable_search: true
+          disable_telem: true
+          fail_ci_if_error: true
+          flags: unittests
+          name: taskchamber-python
+
   package:
     name: Package (Ubuntu, Python 3.11)
     needs: [quality, test]
