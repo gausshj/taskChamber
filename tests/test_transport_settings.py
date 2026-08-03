@@ -6,9 +6,9 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from taskchamber.config import load_configuration
 from taskchamber.transport.mcp import create_server
 from taskchamber.transport.settings import (
+    TEXT_MODE_VARIABLE,
     MCPTextMode,
     MCPTransportSettings,
-    TEXT_MODE_VARIABLE,
 )
 
 

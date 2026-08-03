@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from ..config import ConfigurationBundle
 
 TEXT_MODE_VARIABLE = "TASKCHAMBER_MCP_TEXT_MODE"
 
 
-class MCPTextMode(str, Enum):
+class MCPTextMode(StrEnum):
     """How much of a successful result is repeated in the text content."""
 
     FULL = "full"
