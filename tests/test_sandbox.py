@@ -896,8 +896,90 @@ def test_bwrap_native_boundary_hides_host_processes_and_denies_workspace_writes(
             host_process.terminate()
             host_process.wait(timeout=5)
 
-        assert not denied_write.exists()
-        assert (config_dir / "allowed-write").read_text(encoding="utf-8") == "allowed"
+    assert not denied_write.exists()
+    assert (config_dir / "allowed-write").read_text(encoding="utf-8") == "allowed"
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux")
+    or os.environ.get("TASKCHAMBER_RUN_NATIVE_SANDBOX_TESTS") != "1",
+    reason="requires an explicitly enabled native Linux bubblewrap probe",
+)
+def test_bwrap_mounts_a_private_tmpfs_over_host_tmp(tmp_path: Path) -> None:
+    # SonarCloud python:S5443 flags the bwrap "--tmpfs /tmp" mount. That mount is
+    # the isolation control, not an unsafe shared-directory use: it hides the
+    # shared host /tmp behind a task-private tmpfs inside the mount namespace.
+    # This explicitly enabled native probe is the authoritative evidence.
+    sandbox = BubblewrapSandbox()
+    assert sandbox.preflight()
+
+    with TemporaryDirectory(prefix="taskchamber-s5443-", dir="/tmp") as host_tmp_directory:
+        host_canary = Path(host_tmp_directory) / "host-canary"
+        host_canary.write_text("must-stay-hidden", encoding="utf-8")
+
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir()
+        workspace = IsolatedWorkspace(root=workspace_root, allowed_paths=(workspace_root,))
+        marker = "taskchamber-private-tmp-token"
+        leaked = Path("/tmp") / f"leaked-{marker}"
+
+        # Launch A: the host canary must be invisible inside the sandbox and a
+        # write into the sandbox /tmp must succeed for that task.
+        probe = tmp_path / "tmp-isolation-probe"
+        probe.write_text(
+            "#!/bin/sh\n"
+            'if [ -e "$1" ]; then exit 40; fi\n'
+            '/usr/bin/printf "%s" "$2" >"/tmp/leaked-$2" || exit 41\n',
+            encoding="utf-8",
+        )
+        probe.chmod(0o700)
+        subprocess.run(
+            [
+                str(
+                    sandbox.prepare_wrapper(
+                        workspace,
+                        executable=str(probe),
+                        config_dir=tmp_path / "config-a",
+                        launcher_dir=tmp_path / "launcher-a",
+                    )
+                ),
+                str(host_canary),
+                marker,
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=20,
+        )
+
+        # The marker written inside sandbox /tmp must not have leaked to the host.
+        assert not leaked.exists()
+        # A second, independent launch must not observe launch A's marker: each
+        # task gets a fresh private tmpfs, so /tmp contents are not shared across
+        # TaskChamber executions.
+        verification = tmp_path / "verify-probe"
+        verification.write_text(
+            '#!/bin/sh\nif [ -e "/tmp/leaked-$1" ]; then exit 42; fi\n',
+            encoding="utf-8",
+        )
+        verification.chmod(0o700)
+        subprocess.run(
+            [
+                str(
+                    sandbox.prepare_wrapper(
+                        workspace,
+                        executable=str(verification),
+                        config_dir=tmp_path / "config-b",
+                        launcher_dir=tmp_path / "launcher-b",
+                    )
+                ),
+                marker,
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=20,
+        )
 
 
 @pytest.mark.anyio
