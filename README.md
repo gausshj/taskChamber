@@ -78,6 +78,24 @@ Each response keeps the legacy text header such as
 `[provider=claude_code status=success]` and also returns a structured `TaskResult` in
 MCP `structuredContent`.
 
+By default (`TASKCHAMBER_MCP_TEXT_MODE=full`) the text block repeats the complete
+output below the metadata header, so clients without structured-result support
+keep working unchanged. Clients that consume both representations (for example,
+clients that merge text and `structuredContent` into one tool message) can set
+`TASKCHAMBER_MCP_TEXT_MODE=metadata_only` to receive the generated body exactly
+once: successful responses then carry only the provider/status/result/tokens/
+execution metadata lines in text, while `structuredContent` remains the
+canonical complete `TaskResult` including `output`. Error responses always keep
+the full legacy text, including `error_message` and any incomplete partial
+output, because some clients ignore structured content on error paths. See
+[`docs/MCP_CLIENT_SETUP.md`](https://github.com/gausshj/taskChamber/blob/main/docs/MCP_CLIENT_SETUP.md)
+for client guidance.
+
+`max_output_chars` bounds `TaskResult.output` only. In the default `full` mode
+the wire envelope also contains the legacy text copy, so the total response
+size is not limited to `max_output_chars`; use `metadata_only` when the
+client-visible envelope size must track the configured output bound.
+
 All three tasks can use the project-configured capability policy. `research`
 can select named external directory or CLI/API-backed document sources and set
 `include_workspace=false`; `summarize` and `review` may use them as selected

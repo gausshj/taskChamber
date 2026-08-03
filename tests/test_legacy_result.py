@@ -7,7 +7,7 @@ from taskchamber.core.contracts import (
     ToolCallDecision,
     ToolCallRecord,
 )
-from taskchamber.transport.mcp import render_legacy_result
+from taskchamber.transport.mcp import render_legacy_result, render_metadata_only_result
 
 
 def test_legacy_result_renders_minimal_success_exactly() -> None:
@@ -178,3 +178,49 @@ def test_legacy_result_preserves_zero_and_false_telemetry() -> None:
         "tool_calls=1 denied=0]"
     ) in rendered
     assert "ignored" not in rendered
+
+
+def test_metadata_only_result_omits_success_body_but_keeps_metadata() -> None:
+    result = TaskResult(
+        run_id="run-compact",
+        kind=TaskKind.RESEARCH,
+        status=TaskStatus.SUCCESS,
+        output="唯一正文-你好-Δ",
+        provider="provider-name",
+        num_turns=2,
+        duration_ms=42,
+        usage=TokenUsage(input_tokens=11, output_tokens=5, total_tokens=16),
+        execution=ExecutionTelemetry(allowed_tools=("Read",)),
+        truncated=True,
+        partial=True,
+        effective_max_output_chars=800,
+    )
+
+    rendered = render_metadata_only_result(result)
+
+    assert "唯一正文-你好-Δ" not in rendered
+    assert rendered == (
+        "[provider=provider-name status=success]\n"
+        "[result is_error=false partial=true num_turns=2 duration_ms=42 "
+        "input_tokens=11 output_tokens=5 effective_max_output_chars=800 "
+        "truncated=true error_code=none]\n"
+        "[tokens input=11 output=5 total=16]\n"
+        "[execution allowed=Read]"
+    )
+
+
+def test_metadata_only_result_reuses_the_same_metadata_lines_as_full_text() -> None:
+    result = TaskResult(
+        run_id="run-shared",
+        kind=TaskKind.REVIEW,
+        status=TaskStatus.SUCCESS,
+        output="body",
+        provider="provider-name",
+        usage=TokenUsage(input_tokens=1),
+        execution=ExecutionTelemetry(allowed_tools=("Read", "Grep")),
+    )
+
+    full = render_legacy_result(result)
+    compact = render_metadata_only_result(result)
+
+    assert full == f"{compact}\n\nbody"

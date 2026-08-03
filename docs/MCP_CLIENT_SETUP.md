@@ -96,7 +96,39 @@ requested_capabilities 只使用 workspace.read；
 The outer agent receives the textual result, a `[tokens ...]` line when usage is
 reported, and the full structured object. It can use token counts when deciding
 whether another isolated task is worthwhile. Current token reporting is
-post-call telemetry, not a hard pre-call token budget.
+post-call telemetry, not a hard pre-call token budget. `usage` is the aggregate
+counter set; `model_usage` breaks the same provider-reported counters down per
+model. TaskChamber does not emit a per-call provider invocation trace.
+
+## Response envelope text mode
+
+Every tool response carries two representations of the same `TaskResult`: the
+legacy text block in `content` and the canonical object in `structuredContent`.
+The server-side `TASKCHAMBER_MCP_TEXT_MODE` setting controls how much of a
+successful result the text block repeats:
+
+- `full` (default, backward compatible): the text block ends with the complete
+  generated output. Clients that read only the text content keep working
+  unchanged, and clients that merge text with `structuredContent` see the body
+  twice.
+- `metadata_only`: successful responses keep only the provider/status/result/
+  tokens/execution metadata lines in text; the generated body is served exactly
+  once, through `structuredContent.output`, which remains the canonical
+  complete `TaskResult`. Enable this only for clients that consume
+  `structuredContent` (including clients that merge both representations).
+  Clients that read only the text content must not enable this mode, because
+  the success body no longer appears in text.
+
+Error responses are identical in both modes: the text block always keeps the
+full legacy rendering, including `error_message` and any `[incomplete partial
+output]` section, because some clients ignore `structuredContent` on error
+paths.
+
+`max_output_chars` bounds `TaskResult.output` (and therefore
+`structuredContent.output`). In `full` mode the wire envelope additionally
+contains the legacy text copy, so the total response size is not limited to
+`max_output_chars`; in `metadata_only` mode the client-visible success envelope
+tracks the configured output bound.
 
 ## Persistent project registration
 
