@@ -555,6 +555,11 @@ def test_bwrap_validate_readable_paths_rejects_a_real_host_tmp_path(
     # closed through the public method, not only through the private helper.
     sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
     host_tmp = Path("/tmp")
+    resolved_host_tmp = host_tmp.resolve()
+    link_base = Path.cwd().resolve()
+    if link_base.is_relative_to(resolved_host_tmp):
+        link_base = Path.home().resolve(strict=True)
+    assert not link_base.is_relative_to(resolved_host_tmp)
     monkeypatch.setattr("taskchamber.isolation.sandbox._host_home_directories", lambda: ())
 
     # Use securely randomized directories for the publicly writable host /tmp
@@ -562,7 +567,7 @@ def test_bwrap_validate_readable_paths_rejects_a_real_host_tmp_path(
     # depends on its canonical target rather than its lexical location.
     with (
         TemporaryDirectory(prefix="taskchamber-s5443-", dir=host_tmp) as probe_directory,
-        TemporaryDirectory(prefix=".taskchamber-s5443-link-", dir=Path.cwd()) as link_directory,
+        TemporaryDirectory(prefix=".taskchamber-s5443-link-", dir=link_base) as link_directory,
     ):
         probe = Path(probe_directory) / "ca.pem"
         probe.write_text("canary", encoding="utf-8")
@@ -570,7 +575,6 @@ def test_bwrap_validate_readable_paths_rejects_a_real_host_tmp_path(
             sandbox.validate_readable_paths((probe,))
 
         link = Path(link_directory) / "ca-link"
-        assert not link.parent.resolve().is_relative_to(host_tmp.resolve())
         link.symlink_to(probe)
         with pytest.raises(ValueError, match="hidden"):
             sandbox.validate_readable_paths((link,))
