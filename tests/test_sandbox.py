@@ -483,6 +483,53 @@ def test_native_sandboxes_reject_forwarded_paths_under_hidden_home() -> None:
         sandbox_exec.validate_readable_paths((hidden,))
 
 
+def test_bwrap_rejects_forwarded_paths_under_the_host_tmp_root(
+    tmp_path: Path,
+) -> None:
+    # SonarCloud python:S5443 flags the /tmp masked root used by
+    # BubblewrapSandbox.validate_readable_paths. That root is only a rejection
+    # boundary: it is never created, read, or forwarded. The shared _reject_masked_paths
+    # helper is exercised directly with a hermetic root so the assertions never
+    # depend on the host owning a writable real /tmp.
+    from taskchamber.isolation.sandbox import _reject_masked_paths
+
+    masked_root = tmp_path / "masked-tmp"
+    masked_root.mkdir()
+
+    # An absolute, readable path directly below the masked root is rejected.
+    direct = masked_root / "token"
+    direct.write_text("canary", encoding="utf-8")
+    with pytest.raises(ValueError, match="hidden"):
+        _reject_masked_paths((direct,), (masked_root,))
+
+    # A symlink whose canonical target resolves below the masked root is also
+    # rejected: resolve(strict=True) canonicalizes before the root check, so a
+    # link cannot smuggle a masked target past validation.
+    link_parent = tmp_path / "links"
+    link_parent.mkdir()
+    link = link_parent / "points-into-tmp"
+    link.symlink_to(direct)
+    with pytest.raises(ValueError, match="hidden"):
+        _reject_masked_paths((link,), (masked_root,))
+
+    # A sibling path outside the masked root is accepted: only masked targets
+    # are rejected, so legitimate forwarded paths keep working.
+    outside = tmp_path / "outside"
+    outside.write_text("ok", encoding="utf-8")
+    _reject_masked_paths((outside,), (masked_root,))  # no exception
+
+    # Missing paths fail closed and the message leaks neither the path nor any
+    # host detail.
+    missing = tmp_path / "does-not-exist"
+    with pytest.raises(ValueError, match="readable") as exc_info:
+        _reject_masked_paths((missing,), (masked_root,))
+    assert str(missing) not in str(exc_info.value)
+
+    # Non-absolute paths fail closed before any resolution attempt.
+    with pytest.raises(ValueError, match="absolute"):
+        _reject_masked_paths((Path("relative/secret"),), (masked_root,))
+
+
 def test_version_probe_cannot_create_the_main_launch_observation(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
