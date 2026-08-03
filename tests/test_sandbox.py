@@ -914,14 +914,14 @@ def test_bwrap_mounts_a_private_tmpfs_over_host_tmp(tmp_path: Path) -> None:
     assert sandbox.preflight()
 
     with TemporaryDirectory(prefix="taskchamber-s5443-", dir="/tmp") as host_tmp_directory:
-        host_canary = Path(host_tmp_directory) / "host-canary"
+        host_tmp = Path(host_tmp_directory)
+        host_canary = host_tmp / "host-canary"
         host_canary.write_text("must-stay-hidden", encoding="utf-8")
 
         workspace_root = tmp_path / "workspace"
         workspace_root.mkdir()
         workspace = IsolatedWorkspace(root=workspace_root, allowed_paths=(workspace_root,))
-        marker = "taskchamber-private-tmp-token"
-        leaked = Path("/tmp") / f"leaked-{marker}"
+        sandbox_marker = host_tmp / "sandbox-marker"
 
         # Launch A: the host canary must be invisible inside the sandbox and a
         # write into the sandbox /tmp must succeed for that task.
@@ -929,7 +929,8 @@ def test_bwrap_mounts_a_private_tmpfs_over_host_tmp(tmp_path: Path) -> None:
         probe.write_text(
             "#!/bin/sh\n"
             'if [ -e "$1" ]; then exit 40; fi\n'
-            '/usr/bin/printf "%s" "$2" >"/tmp/leaked-$2" || exit 41\n',
+            '/bin/mkdir -p "$2" || exit 41\n'
+            '/usr/bin/printf private >"$2/sandbox-marker" || exit 42\n',
             encoding="utf-8",
         )
         probe.chmod(0o700)
@@ -944,7 +945,7 @@ def test_bwrap_mounts_a_private_tmpfs_over_host_tmp(tmp_path: Path) -> None:
                     )
                 ),
                 str(host_canary),
-                marker,
+                str(host_tmp),
             ],
             capture_output=True,
             check=True,
@@ -953,13 +954,13 @@ def test_bwrap_mounts_a_private_tmpfs_over_host_tmp(tmp_path: Path) -> None:
         )
 
         # The marker written inside sandbox /tmp must not have leaked to the host.
-        assert not leaked.exists()
+        assert not sandbox_marker.exists()
         # A second, independent launch must not observe launch A's marker: each
         # task gets a fresh private tmpfs, so /tmp contents are not shared across
         # TaskChamber executions.
         verification = tmp_path / "verify-probe"
         verification.write_text(
-            '#!/bin/sh\nif [ -e "/tmp/leaked-$1" ]; then exit 42; fi\n',
+            '#!/bin/sh\nif [ -e "$1/sandbox-marker" ]; then exit 43; fi\n',
             encoding="utf-8",
         )
         verification.chmod(0o700)
@@ -973,7 +974,7 @@ def test_bwrap_mounts_a_private_tmpfs_over_host_tmp(tmp_path: Path) -> None:
                         launcher_dir=tmp_path / "launcher-b",
                     )
                 ),
-                marker,
+                str(host_tmp),
             ],
             capture_output=True,
             check=True,
