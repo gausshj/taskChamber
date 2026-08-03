@@ -512,6 +512,20 @@ def test_bwrap_rejects_forwarded_paths_under_the_host_tmp_root(
     with pytest.raises(ValueError, match="hidden"):
         _reject_masked_paths((link,), (masked_root,))
 
+    # The masked root itself may be a symlink to a different canonical directory
+    # (macOS exposes /tmp -> /private/tmp). The candidate resolves to the real
+    # directory while the configured root is the symlink literal, so the roots
+    # must be canonicalized too or the candidate slips past the unresolved
+    # literal. This reproduces the regression that motivated the hardening.
+    real_dir = tmp_path / "real-tmp"
+    real_dir.mkdir()
+    root_symlink = tmp_path / "symlinked-tmp"
+    root_symlink.symlink_to(real_dir)
+    target = real_dir / "ca.pem"
+    target.write_text("canary", encoding="utf-8")
+    with pytest.raises(ValueError, match="hidden"):
+        _reject_masked_paths((target,), (root_symlink,))
+
     # A sibling path outside the masked root is accepted: only masked targets
     # are rejected, so legitimate forwarded paths keep working.
     outside = tmp_path / "outside"
@@ -528,6 +542,65 @@ def test_bwrap_rejects_forwarded_paths_under_the_host_tmp_root(
     # Non-absolute paths fail closed before any resolution attempt.
     with pytest.raises(ValueError, match="absolute"):
         _reject_masked_paths((Path("relative/secret"),), (masked_root,))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="bwrap is Linux-only")
+def test_bwrap_validate_readable_paths_rejects_a_real_host_tmp_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise the production entry point BubblewrapSandbox.validate_readable_paths
+    # against a real path below the host /tmp on Linux (where /tmp is normally a
+    # real directory). A forwarded CA path below the masked root must fail
+    # closed through the public method, not only through the private helper.
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+    host_tmp = Path("/tmp")
+    probe = host_tmp / f"taskchamber-s5443-probe-{os.getpid()}"
+    probe.write_text("canary", encoding="utf-8")
+    monkeypatch.setattr("taskchamber.isolation.sandbox._host_home_directories", lambda: ())
+
+    try:
+        with pytest.raises(ValueError, match="hidden"):
+            sandbox.validate_readable_paths((probe,))
+        # A symlink whose canonical target is below /tmp is rejected too.
+        link = tmp_path / "ca-link"
+        link.symlink_to(probe)
+        with pytest.raises(ValueError, match="hidden"):
+            sandbox.validate_readable_paths((link,))
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def test_bwrap_rejects_a_forwarded_path_retargeted_into_the_masked_root(
+    tmp_path: Path,
+) -> None:
+    # TOCTOU argument for S5443: an accepted path must not be retargetable into
+    # the masked root between validation and launch. Because resolve(strict=True)
+    # fully canonicalizes the candidate and the roots are canonicalized to match,
+    # any intermediate symlink hop that lands below the masked root is detected
+    # at validation time; there is no accepted state that an attacker can later
+    # redirect into the masked root without changing the canonical path itself.
+    from taskchamber.isolation.sandbox import _reject_masked_paths
+
+    masked_root = tmp_path / "masked-tmp"
+    masked_root.mkdir()
+    safe_target = tmp_path / "legit-ca.pem"
+    safe_target.write_text("safe", encoding="utf-8")
+    attacker_target = masked_root / "evil.pem"
+    attacker_target.write_text("evil", encoding="utf-8")
+
+    # A link that currently points at the safe target is accepted.
+    link = tmp_path / "ca-link"
+    link.symlink_to(safe_target)
+    _reject_masked_paths((link,), (masked_root,))  # accepted
+
+    # If an attacker repoints the same link at the masked root, the next
+    # validation canonicalizes the new target and rejects it. The accepted
+    # state is therefore never silently retargetable into the masked root.
+    link.unlink()
+    link.symlink_to(attacker_target)
+    with pytest.raises(ValueError, match="hidden"):
+        _reject_masked_paths((link,), (masked_root,))
 
 
 def test_version_probe_cannot_create_the_main_launch_observation(tmp_path: Path) -> None:
