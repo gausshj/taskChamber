@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from claude_agent_sdk import ResultMessage
@@ -483,6 +484,131 @@ def test_native_sandboxes_reject_forwarded_paths_under_hidden_home() -> None:
         sandbox_exec.validate_readable_paths((hidden,))
 
 
+def test_bwrap_rejects_forwarded_paths_under_the_host_tmp_root(
+    tmp_path: Path,
+) -> None:
+    # SonarCloud python:S5443 flags the /tmp masked root used by
+    # BubblewrapSandbox.validate_readable_paths. That root is only a rejection
+    # boundary: it is never created, read, or forwarded. The shared _reject_masked_paths
+    # helper is exercised directly with a hermetic root so the assertions never
+    # depend on the host owning a writable real /tmp.
+    from taskchamber.isolation.sandbox import _reject_masked_paths
+
+    masked_root = tmp_path / "masked-tmp"
+    masked_root.mkdir()
+
+    # An absolute, readable path directly below the masked root is rejected.
+    direct = masked_root / "token"
+    direct.write_text("canary", encoding="utf-8")
+    with pytest.raises(ValueError, match="hidden"):
+        _reject_masked_paths((direct,), (masked_root,))
+
+    # A symlink whose canonical target resolves below the masked root is also
+    # rejected: resolve(strict=True) canonicalizes before the root check, so a
+    # link cannot smuggle a masked target past validation.
+    link_parent = tmp_path / "links"
+    link_parent.mkdir()
+    link = link_parent / "points-into-tmp"
+    link.symlink_to(direct)
+    with pytest.raises(ValueError, match="hidden"):
+        _reject_masked_paths((link,), (masked_root,))
+
+    # The masked root itself may be a symlink to a different canonical directory
+    # (macOS exposes /tmp -> /private/tmp). The candidate resolves to the real
+    # directory while the configured root is the symlink literal, so the roots
+    # must be canonicalized too or the candidate slips past the unresolved
+    # literal. This reproduces the regression that motivated the hardening.
+    real_dir = tmp_path / "real-tmp"
+    real_dir.mkdir()
+    root_symlink = tmp_path / "symlinked-tmp"
+    root_symlink.symlink_to(real_dir)
+    target = real_dir / "ca.pem"
+    target.write_text("canary", encoding="utf-8")
+    with pytest.raises(ValueError, match="hidden"):
+        _reject_masked_paths((target,), (root_symlink,))
+
+    # A sibling path outside the masked root is accepted: only masked targets
+    # are rejected, so legitimate forwarded paths keep working.
+    outside = tmp_path / "outside"
+    outside.write_text("ok", encoding="utf-8")
+    _reject_masked_paths((outside,), (masked_root,))  # no exception
+
+    # Missing paths fail closed and the message leaks neither the path nor any
+    # host detail.
+    missing = tmp_path / "does-not-exist"
+    with pytest.raises(ValueError, match="readable") as exc_info:
+        _reject_masked_paths((missing,), (masked_root,))
+    assert str(missing) not in str(exc_info.value)
+
+    # Non-absolute paths fail closed before any resolution attempt.
+    with pytest.raises(ValueError, match="absolute"):
+        _reject_masked_paths((Path("relative/secret"),), (masked_root,))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="bwrap is Linux-only")
+def test_bwrap_validate_readable_paths_rejects_a_real_host_tmp_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise the production entry point BubblewrapSandbox.validate_readable_paths
+    # against a real path below the host /tmp on Linux (where /tmp is normally a
+    # real directory). A forwarded CA path below the masked root must fail
+    # closed through the public method, not only through the private helper.
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+    host_tmp = Path("/tmp")
+    resolved_host_tmp = host_tmp.resolve()
+    link_base = Path.cwd().resolve()
+    if link_base.is_relative_to(resolved_host_tmp):
+        link_base = Path.home().resolve(strict=True)
+    assert not link_base.is_relative_to(resolved_host_tmp)
+    monkeypatch.setattr("taskchamber.isolation.sandbox._host_home_directories", lambda: ())
+
+    # Use securely randomized directories for the publicly writable host /tmp
+    # probe and keep the link itself outside /tmp so the symlink assertion
+    # depends on its canonical target rather than its lexical location.
+    with (
+        TemporaryDirectory(prefix="taskchamber-s5443-", dir=host_tmp) as probe_directory,
+        TemporaryDirectory(prefix=".taskchamber-s5443-link-", dir=link_base) as link_directory,
+    ):
+        probe = Path(probe_directory) / "ca.pem"
+        probe.write_text("canary", encoding="utf-8")
+        with pytest.raises(ValueError, match="hidden"):
+            sandbox.validate_readable_paths((probe,))
+
+        link = Path(link_directory) / "ca-link"
+        link.symlink_to(probe)
+        with pytest.raises(ValueError, match="hidden"):
+            sandbox.validate_readable_paths((link,))
+
+
+def test_bwrap_revalidation_rejects_a_path_retargeted_into_the_masked_root(
+    tmp_path: Path,
+) -> None:
+    # Path validation is a point-in-time availability check, not the OS security
+    # boundary. Revalidation must observe a changed symlink target; the native
+    # bwrap probe separately proves that /tmp remains masked if the target changes
+    # after validation but before the sandboxed command uses it.
+    from taskchamber.isolation.sandbox import _reject_masked_paths
+
+    masked_root = tmp_path / "masked-tmp"
+    masked_root.mkdir()
+    safe_target = tmp_path / "legit-ca.pem"
+    safe_target.write_text("safe", encoding="utf-8")
+    attacker_target = masked_root / "evil.pem"
+    attacker_target.write_text("evil", encoding="utf-8")
+
+    # A link that currently points at the safe target is accepted.
+    link = tmp_path / "ca-link"
+    link.symlink_to(safe_target)
+    _reject_masked_paths((link,), (masked_root,))  # accepted
+
+    # If the same link is repointed at the masked root, a subsequent validation
+    # canonicalizes the new target and rejects it.
+    link.unlink()
+    link.symlink_to(attacker_target)
+    with pytest.raises(ValueError, match="hidden"):
+        _reject_masked_paths((link,), (masked_root,))
+
+
 def test_version_probe_cannot_create_the_main_launch_observation(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -715,44 +841,63 @@ def test_macos_native_profile_starts_bundled_cli_and_enforces_file_boundary(
 def test_bwrap_native_boundary_hides_host_processes_and_denies_workspace_writes(
     tmp_path: Path,
 ) -> None:
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
-    denied_write = workspace_root / "denied-write"
-    workspace = IsolatedWorkspace(root=workspace_root, allowed_paths=(workspace_root,))
-    sandbox = BubblewrapSandbox()
-    assert sandbox.preflight()
+    with TemporaryDirectory(prefix="taskchamber-native-", dir="/tmp") as host_tmp_directory:
+        host_tmp_canary = Path(host_tmp_directory) / "host-canary"
+        host_tmp_canary.write_text("must-stay-hidden", encoding="utf-8")
 
-    probe = tmp_path / "boundary-probe"
-    probe.write_text(
-        "#!/bin/sh\n"
-        'if [ -e "/proc/$1" ]; then exit 40; fi\n'
-        'if /usr/bin/printf bad > "$2" 2>/dev/null; then exit 41; fi\n'
-        '/usr/bin/printf allowed > "$HOME/allowed-write"\n',
-        encoding="utf-8",
-    )
-    probe.chmod(0o700)
-    config_dir = tmp_path / "config"
-    wrapper = sandbox.prepare_wrapper(
-        workspace,
-        executable=str(probe),
-        config_dir=config_dir,
-        launcher_dir=tmp_path / "launcher",
-    )
-    host_process = subprocess.Popen(["/bin/sleep", "20"])
-    try:
-        subprocess.run(
-            [str(wrapper), str(host_process.pid), str(denied_write)],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=20,
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir()
+        denied_write = workspace_root / "denied-write"
+        workspace = IsolatedWorkspace(root=workspace_root, allowed_paths=(workspace_root,))
+        sandbox = BubblewrapSandbox()
+        assert sandbox.preflight()
+
+        # Validate an outside target, then retarget the same workspace link to a
+        # host /tmp canary before launch. The application-level check is inherently
+        # point-in-time; bwrap's private /tmp must remain the enforcement boundary.
+        forwarded_link = workspace_root / "forwarded-ca"
+        forwarded_link.symlink_to(Path("/bin/sh").resolve(strict=True))
+        sandbox.validate_readable_paths((forwarded_link,))
+        forwarded_link.unlink()
+        forwarded_link.symlink_to(host_tmp_canary)
+
+        probe = tmp_path / "boundary-probe"
+        probe.write_text(
+            "#!/bin/sh\n"
+            'if [ -e "/proc/$1" ]; then exit 40; fi\n'
+            'if /usr/bin/printf bad > "$2" 2>/dev/null; then exit 41; fi\n'
+            'if /bin/cat "$3" >/dev/null 2>&1; then exit 42; fi\n'
+            '/usr/bin/printf allowed > "$HOME/allowed-write"\n',
+            encoding="utf-8",
         )
-    finally:
-        host_process.terminate()
-        host_process.wait(timeout=5)
+        probe.chmod(0o700)
+        config_dir = tmp_path / "config"
+        wrapper = sandbox.prepare_wrapper(
+            workspace,
+            executable=str(probe),
+            config_dir=config_dir,
+            launcher_dir=tmp_path / "launcher",
+        )
+        host_process = subprocess.Popen(["/bin/sleep", "20"])
+        try:
+            subprocess.run(
+                [
+                    str(wrapper),
+                    str(host_process.pid),
+                    str(denied_write),
+                    str(forwarded_link),
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=20,
+            )
+        finally:
+            host_process.terminate()
+            host_process.wait(timeout=5)
 
-    assert not denied_write.exists()
-    assert (config_dir / "allowed-write").read_text(encoding="utf-8") == "allowed"
+        assert not denied_write.exists()
+        assert (config_dir / "allowed-write").read_text(encoding="utf-8") == "allowed"
 
 
 @pytest.mark.anyio

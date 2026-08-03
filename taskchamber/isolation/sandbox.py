@@ -694,6 +694,13 @@ def _observed_cli_argv(executable: str, marker: Path) -> list[str]:
 
 
 def _reject_masked_paths(paths: tuple[Path, ...], masked_roots: tuple[Path, ...]) -> None:
+    # Canonicalize the masked roots before comparison so a host layout where the
+    # root is itself a symlink (e.g. macOS ``/tmp`` -> ``/private/tmp``) cannot
+    # let a resolved candidate slip past an unresolved literal. ``strict=False``
+    # keeps rejection working even when a configured root does not currently
+    # exist on this host, and matches the kernel by resolving the root the same
+    # way as the candidate.
+    resolved_roots = tuple(root.resolve(strict=False) for root in masked_roots)
     for path in paths:
         if not path.is_absolute():
             raise ValueError("forwarded CLI path must be absolute")
@@ -701,7 +708,7 @@ def _reject_masked_paths(paths: tuple[Path, ...], masked_roots: tuple[Path, ...]
             resolved = path.resolve(strict=True)
         except (OSError, RuntimeError) as exc:
             raise ValueError("forwarded CLI path is not readable") from exc
-        if any(resolved == root or resolved.is_relative_to(root) for root in masked_roots):
+        if any(resolved == root or resolved.is_relative_to(root) for root in resolved_roots):
             raise ValueError("forwarded CLI path is hidden by the selected sandbox")
 
 
