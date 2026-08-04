@@ -9,6 +9,20 @@ def render_legacy_result(result: TaskResult) -> str:
     """Render the stable text result alongside the canonical structured result."""
 
     is_error = result.is_error
+    metadata_text = render_result_metadata(result)
+    return f"{metadata_text}\n\n{_render_body(result, is_error=is_error)}".rstrip()
+
+
+def render_metadata_only_result(result: TaskResult) -> str:
+    """Render only the audit/status metadata lines, without the generated body."""
+
+    return render_result_metadata(result)
+
+
+def render_result_metadata(result: TaskResult) -> str:
+    """Render the header and metadata lines shared by both text modes."""
+
+    is_error = result.is_error
     metadata = [
         _render_header(result),
         _render_result_metadata(result, is_error=is_error),
@@ -18,8 +32,7 @@ def render_legacy_result(result: TaskResult) -> str:
         _render_execution_metadata(result.execution),
     )
     metadata.extend(line for line in optional_metadata if line is not None)
-    metadata_text = "\n".join(metadata)
-    return f"{metadata_text}\n\n{_render_body(result, is_error=is_error)}".rstrip()
+    return "\n".join(metadata)
 
 
 def _render_header(result: TaskResult) -> str:
@@ -119,4 +132,4 @@ def _render_body(result: TaskResult, *, is_error: bool) -> str:
     return body
 
 
-__all__ = ["render_legacy_result"]
+__all__ = ["render_legacy_result", "render_metadata_only_result", "render_result_metadata"]

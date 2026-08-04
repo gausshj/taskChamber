@@ -19,7 +19,7 @@ from taskchamber.config import (
 from taskchamber.core.contracts import TaskResult, TaskStatus, TokenUsage
 from taskchamber.core.service import ServerSettings, TaskService
 from taskchamber.runtimes.fake import FakeRuntime
-from taskchamber.transport.mcp import create_server
+from taskchamber.transport.mcp import MCPTextMode, create_server
 
 
 @pytest.mark.anyio
@@ -342,3 +342,146 @@ async def test_mcp_research_uses_structured_command_document_request(tmp_path: P
     assert result.structuredContent is not None
     assert result.structuredContent["execution"]["document_sources"] == ["record_detail"]
     assert result.structuredContent["execution"]["document_tools"] == ["DocumentRead"]
+
+
+SENTINEL_BODY = "唯一正文-你好-Δ"
+
+
+@pytest.mark.anyio
+async def test_mcp_full_text_mode_keeps_body_in_text_and_structured_content(
+    tmp_path: Path,
+) -> None:
+    async def succeed(request, _policy):
+        return TaskResult(
+            run_id=request.run_id,
+            kind=request.kind,
+            status=TaskStatus.SUCCESS,
+            output=SENTINEL_BODY,
+        )
+
+    server = create_server(
+        TaskService(
+            FakeRuntime(handler=succeed),
+            ServerSettings(workspace_root=tmp_path, default_profile="fake-profile"),
+        ),
+        text_mode=MCPTextMode.FULL,
+    )
+
+    async with create_connected_server_and_client_session(server) as session:
+        result = await session.call_tool("research", {"question": "q"})
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert result.structuredContent["output"] == SENTINEL_BODY
+    assert result.content[0].text.endswith(SENTINEL_BODY)
+    assert result.model_dump_json().count(SENTINEL_BODY) == 2
+
+
+@pytest.mark.anyio
+async def test_mcp_metadata_only_mode_serializes_success_body_exactly_once(
+    tmp_path: Path,
+) -> None:
+    async def succeed(request, _policy):
+        return TaskResult(
+            run_id=request.run_id,
+            kind=request.kind,
+            status=TaskStatus.SUCCESS,
+            output=SENTINEL_BODY,
+            usage=TokenUsage(input_tokens=12, output_tokens=3, total_tokens=15),
+        )
+
+    server = create_server(
+        TaskService(
+            FakeRuntime(handler=succeed),
+            ServerSettings(workspace_root=tmp_path, default_profile="fake-profile"),
+        ),
+        text_mode=MCPTextMode.METADATA_ONLY,
+    )
+
+    async with create_connected_server_and_client_session(server) as session:
+        result = await session.call_tool("research", {"question": "q"})
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert result.structuredContent["output"] == SENTINEL_BODY
+    text = result.content[0].text
+    assert SENTINEL_BODY not in text
+    assert result.model_dump_json().count(SENTINEL_BODY) == 1
+    assert "status=success" in text
+    assert "partial=false" in text
+    assert "truncated=false" in text
+    assert "[tokens input=12 output=3 total=15]" in text
+    assert "[execution " in text
+
+
+@pytest.mark.anyio
+async def test_mcp_metadata_only_mode_keeps_full_error_text(tmp_path: Path) -> None:
+    async def fail_with_partial(request, _policy):
+        return TaskResult(
+            run_id=request.run_id,
+            kind=request.kind,
+            status=TaskStatus.FAILED,
+            output=f"partial {SENTINEL_BODY}",
+            partial=True,
+            error_code="failed",
+            error_message="The provider stopped mid-task.",
+        )
+
+    server = create_server(
+        TaskService(
+            FakeRuntime(handler=fail_with_partial),
+            ServerSettings(workspace_root=tmp_path, default_profile="fake-profile"),
+        ),
+        text_mode=MCPTextMode.METADATA_ONLY,
+    )
+
+    async with create_connected_server_and_client_session(server) as session:
+        result = await session.call_tool("research", {"question": "q"})
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    assert result.structuredContent["output"] == f"partial {SENTINEL_BODY}"
+    assert result.structuredContent["error_message"] == "The provider stopped mid-task."
+    text = result.content[0].text
+    assert "The provider stopped mid-task." in text
+    assert "[incomplete partial output]" in text
+    assert f"partial {SENTINEL_BODY}" in text
+
+
+@pytest.mark.anyio
+async def test_mcp_metadata_only_mode_keeps_server_truncation_contract(tmp_path: Path) -> None:
+    async def verbose(request, _policy):
+        return TaskResult(
+            run_id=request.run_id,
+            kind=request.kind,
+            status=TaskStatus.SUCCESS,
+            output=SENTINEL_BODY * 40,
+        )
+
+    server = create_server(
+        TaskService(
+            FakeRuntime(handler=verbose),
+            ServerSettings(
+                workspace_root=tmp_path,
+                default_profile="fake-profile",
+                max_output_chars=200,
+            ),
+        ),
+        text_mode=MCPTextMode.METADATA_ONLY,
+    )
+
+    async with create_connected_server_and_client_session(server) as session:
+        result = await session.call_tool("research", {"question": "q"})
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert len(result.structuredContent["output"]) <= 200
+    assert result.structuredContent["output"].endswith("[output truncated by server policy]")
+    assert result.structuredContent["truncated"] is True
+    assert result.structuredContent["partial"] is True
+    assert result.structuredContent["effective_max_output_chars"] == 200
+    text = result.content[0].text
+    assert SENTINEL_BODY not in text
+    assert "partial=true" in text
+    assert "truncated=true" in text
+    assert "effective_max_output_chars=200" in text

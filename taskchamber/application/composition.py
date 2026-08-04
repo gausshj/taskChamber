@@ -71,6 +71,22 @@ def create_default_service(
         env_file=env_file,
         working_directory=launch_directory,
     )
+    return create_service_from_configuration(
+        configuration,
+        working_directory=launch_directory,
+        registry=registry,
+    )
+
+
+def create_service_from_configuration(
+    configuration: ConfigurationBundle,
+    *,
+    working_directory: Path | None = None,
+    registry: RuntimeRegistry | None = None,
+) -> TaskService:
+    """Build the task service from an already-loaded configuration bundle."""
+
+    launch_directory = (working_directory or Path.cwd()).expanduser().resolve()
     loaded_policy = load_project_policy(
         configuration,
         working_directory=launch_directory,
@@ -101,4 +117,5 @@ __all__ = [
     "create_runtime_from_configuration",
     "create_runtime_from_environment",
     "create_runtime_registry",
+    "create_service_from_configuration",
 ]

@@ -8,10 +8,16 @@ from typing import Annotated
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
-from ..application.composition import create_default_service, create_runtime_from_environment
+from ..application.composition import (
+    create_default_service,
+    create_runtime_from_environment,
+    create_service_from_configuration,
+)
+from ..config import load_configuration
 from ..core.contracts import DocumentMode, DocumentSourceSelection, TaskResult, TaskStatus
 from ..core.service import TaskService
-from .legacy import render_legacy_result
+from .legacy import render_legacy_result, render_metadata_only_result
+from .settings import MCPTextMode, MCPTransportSettings
 
 SERVER_NAME = "taskchamber"
 INSTRUCTIONS = (
@@ -25,18 +31,46 @@ INSTRUCTIONS = (
 )
 
 
-def to_call_tool_result(result: TaskResult) -> CallToolResult:
+def to_call_tool_result(
+    result: TaskResult,
+    *,
+    text_mode: MCPTextMode = MCPTextMode.FULL,
+) -> CallToolResult:
+    """Serialize one task result into the MCP response envelope.
+
+    ``structuredContent`` always carries the canonical complete ``TaskResult``.
+    ``metadata_only`` compacts successful text to audit metadata so clients that
+    consume both representations receive the generated body exactly once; error
+    responses always keep the full legacy text.
+    """
+
+    if text_mode is MCPTextMode.METADATA_ONLY and result.status is TaskStatus.SUCCESS:
+        text = render_metadata_only_result(result)
+    else:
+        text = render_legacy_result(result)
     return CallToolResult(
-        content=[TextContent(type="text", text=render_legacy_result(result))],
+        content=[TextContent(type="text", text=text)],
         structuredContent=result.model_dump(mode="json"),
         isError=result.status is not TaskStatus.SUCCESS,
     )
 
 
-def create_server(service: TaskService | None = None) -> FastMCP:
+def create_server(
+    service: TaskService | None = None,
+    *,
+    text_mode: MCPTextMode | None = None,
+) -> FastMCP:
     """Build a server whose tools only depend on ``TaskService`` contracts."""
 
-    task_service = service or create_default_service()
+    if service is None:
+        configuration = load_configuration()
+        task_service = create_service_from_configuration(configuration)
+        effective_text_mode = (
+            text_mode or MCPTransportSettings.from_configuration(configuration).text_mode
+        )
+    else:
+        task_service = service
+        effective_text_mode = text_mode or MCPTextMode.FULL
     default_profile = task_service.settings.default_profile
     instructions = INSTRUCTIONS
     if task_service.document_sources is not None:
@@ -106,7 +140,8 @@ def create_server(service: TaskService | None = None) -> FastMCP:
                 include_workspace=include_workspace,
                 workspace_paths=workspace_paths,
                 requested_capabilities=requested_capabilities,
-            )
+            ),
+            text_mode=effective_text_mode,
         )
 
     @mcp.tool()
@@ -139,7 +174,8 @@ def create_server(service: TaskService | None = None) -> FastMCP:
                 requested_capabilities=requested_capabilities,
                 document_sources=document_sources,
                 document_requests=document_requests,
-            )
+            ),
+            text_mode=effective_text_mode,
         )
 
     @mcp.tool()
@@ -172,7 +208,8 @@ def create_server(service: TaskService | None = None) -> FastMCP:
                 requested_capabilities=requested_capabilities,
                 document_sources=document_sources,
                 document_requests=document_requests,
-            )
+            ),
+            text_mode=effective_text_mode,
         )
 
     return mcp
@@ -203,11 +240,14 @@ def main() -> None:
 
 
 __all__ = [
+    "MCPTextMode",
+    "MCPTransportSettings",
     "create_default_service",
     "create_runtime_from_environment",
     "create_server",
     "get_default_server",
     "main",
     "render_legacy_result",
+    "render_metadata_only_result",
     "to_call_tool_result",
 ]
