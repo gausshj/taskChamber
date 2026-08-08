@@ -112,11 +112,18 @@ class ServerSettings:
             raise ValueError("max_concurrency must be at least one")
         if self.max_output_chars < 1:
             raise ValueError("max_output_chars must be at least one")
-        if self.max_single_pass_document_bytes < 1:
-            raise ValueError("max_single_pass_document_bytes must be at least one")
-        if self.absolute_max_single_pass_document_bytes < 1:
-            raise ValueError("absolute_max_single_pass_document_bytes must be at least one")
-        if self.max_single_pass_document_bytes > self.absolute_max_single_pass_document_bytes:
+        effective = _require_positive_int(
+            self.max_single_pass_document_bytes, field="max_single_pass_document_bytes"
+        )
+        absolute = _require_positive_int(
+            self.absolute_max_single_pass_document_bytes,
+            field="absolute_max_single_pass_document_bytes",
+        )
+        if effective > absolute:
+            raise ValueError(
+                "max_single_pass_document_bytes must not exceed "
+                "absolute_max_single_pass_document_bytes"
+            )
             raise ValueError(
                 "max_single_pass_document_bytes must not exceed "
                 "absolute_max_single_pass_document_bytes"
@@ -166,6 +173,21 @@ def _positive_int_setting(raw: str | None, *, default: int, field: str) -> int:
         value = int(raw)
     except ValueError as exc:
         raise ValueError(f"{field} must be a positive integer") from exc
+    if value < 1:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _require_positive_int(value: object, *, field: str) -> int:
+    """Reject non-integers (including bool and float) before the positivity check.
+
+    The public ``ServerSettings(...)`` constructor must fail closed for illegal
+    configuration, so a ``True`` or ``4.5`` value cannot slip past the ``< 1``
+    guard and surface as an uncaught error during a later request.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be a positive integer")
     if value < 1:
         raise ValueError(f"{field} must be a positive integer")
     return value

@@ -629,6 +629,28 @@ def test_server_settings_rejects_an_absolute_limit_below_one(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.parametrize(
+    ("effective", "absolute", "matched"),
+    [
+        (True, 2_097_152, "max_single_pass_document_bytes"),  # bool is not an int
+        (4.5, 2_097_152, "max_single_pass_document_bytes"),  # float is not an int
+        (64_000, True, "absolute_max_single_pass_document_bytes"),
+        (64_000, 4.5, "absolute_max_single_pass_document_bytes"),
+    ],
+)
+def test_server_settings_rejects_non_integer_limits_on_direct_construction(
+    tmp_path: Path, effective: object, absolute: object, matched: str
+) -> None:
+    # The public constructor must fail closed for non-integers (bool/float), not
+    # surface them as uncaught errors during a later request.
+    with pytest.raises(ValueError, match=matched):
+        ServerSettings(  # type: ignore[arg-type]
+            workspace_root=tmp_path,
+            max_single_pass_document_bytes=effective,
+            absolute_max_single_pass_document_bytes=absolute,
+        )
+
+
 @pytest.mark.anyio
 async def test_review_task_path_maps_an_oversized_single_pass_document(tmp_path: Path) -> None:
     # The summarize/review catch site must route oversized documents through the
