@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, computed_field
 
@@ -121,6 +121,24 @@ class ExecutionTelemetry(BaseModel, frozen=True):
     document_tools: tuple[str, ...] = ()
 
 
+class SinglePassDocumentTooLargeDetails(BaseModel, frozen=True):
+    """Safe, typed details for a single-pass document that exceeded the byte limit.
+
+    Only public virtual identifiers and server-owned byte counts are carried.
+    Host paths, argv, environment values, credentials, and command stderr are
+    never included. Clients must not parse ``error_message`` for these values.
+    """
+
+    type: Literal["single_pass_document_too_large"] = "single_pass_document_too_large"
+    document_mode: Literal["single_pass"] = "single_pass"
+    source: str = Field(min_length=1, max_length=200)
+    document_id: str = Field(min_length=1, max_length=1_000)
+    observed_utf8_bytes: int = Field(ge=0)
+    effective_limit_bytes: int = Field(ge=1)
+    absolute_limit_bytes: int = Field(ge=1)
+    retryable: Literal[False] = False
+
+
 class TaskResult(BaseModel, frozen=True):
     """A safe, structured result returned by every runtime adapter."""
 
@@ -143,6 +161,7 @@ class TaskResult(BaseModel, frozen=True):
     effective_max_output_chars: int | None = Field(default=None, ge=1)
     error_code: str | None = None
     error_message: str | None = None
+    error_details: SinglePassDocumentTooLargeDetails | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

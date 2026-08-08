@@ -286,8 +286,9 @@ async def test_single_pass_rejects_multiple_and_oversized_documents(tmp_path: Pa
     documents.mkdir()
     (documents / "one.txt").write_text("one", encoding="utf-8")
     (documents / "two.txt").write_text("two", encoding="utf-8")
+    runtime = FakeRuntime()
     service = TaskService(
-        FakeRuntime(),
+        runtime,
         ServerSettings(workspace_root=workspace, max_single_pass_document_bytes=4),
         document_sources=DocumentSourceRegistry(
             {
@@ -324,10 +325,296 @@ async def test_single_pass_rejects_multiple_and_oversized_documents(tmp_path: Pa
     assert multiple.status is TaskStatus.INVALID_REQUEST
     assert multiple.error_code == "invalid_request"
     assert multiple.effective_max_output_chars == service.settings.max_output_chars
+    assert multiple.error_details is None
     assert "exactly one" in (multiple.error_message or "")
+    # The runtime is never invoked when the document is rejected before launch.
+    assert runtime.requests == []
     assert oversized.status is TaskStatus.INVALID_REQUEST
+    assert oversized.error_code == "single_pass_document_too_large"
     assert oversized.effective_max_output_chars == service.settings.max_output_chars
-    assert "4-byte" in (oversized.error_message or "")
+    assert oversized.error_details is not None
+    assert oversized.error_details.type == "single_pass_document_too_large"  # type: ignore[union-attr]
+    assert oversized.error_details.document_mode == "single_pass"  # type: ignore[union-attr]
+    assert oversized.error_details.source == "detail"  # type: ignore[union-attr]
+    assert oversized.error_details.document_id == "one.txt"  # type: ignore[union-attr]
+    assert oversized.error_details.observed_utf8_bytes == 9  # type: ignore[union-attr]
+    assert oversized.error_details.effective_limit_bytes == 4  # type: ignore[union-attr]
+    assert oversized.error_details.absolute_limit_bytes == 2_097_152  # type: ignore[union-attr]
+    assert oversized.error_details.retryable is False  # type: ignore[union-attr]
+    # The host workspace path must never appear in the error surface.
+    assert str(workspace) not in (oversized.error_message or "")
+    assert str(workspace) not in oversized.model_dump_json()
+
+
+def _document_service(tmp_path: Path, *, effective: int, absolute: int) -> TaskService:
+    documents = tmp_path / "documents"
+    documents.mkdir(exist_ok=True)
+    return TaskService(
+        FakeRuntime(),
+        ServerSettings(
+            workspace_root=tmp_path,
+            max_single_pass_document_bytes=effective,
+            absolute_max_single_pass_document_bytes=absolute,
+        ),
+        document_sources=DocumentSourceRegistry(
+            {
+                "detail": DirectoryDocumentSource(
+                    DirectoryDocumentSourceConfig(name="detail", root=documents)
+                )
+            }
+        ),
+    )
+
+
+def test_server_settings_defaults_preserve_the_current_behavior(tmp_path: Path) -> None:
+    settings = ServerSettings(workspace_root=tmp_path)
+    assert settings.max_single_pass_document_bytes == 64_000
+    assert settings.absolute_max_single_pass_document_bytes == 2_097_152
+
+
+def test_server_settings_loads_both_limits_from_mapping(tmp_path: Path) -> None:
+    settings = ServerSettings.from_mapping(
+        {
+            "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+            "TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES": "1048576",
+            "TASKCHAMBER_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES": "2097152",
+        }
+    )
+    assert settings.max_single_pass_document_bytes == 1_048_576
+    assert settings.absolute_max_single_pass_document_bytes == 2_097_152
+
+
+def test_server_settings_blank_values_use_defaults(tmp_path: Path) -> None:
+    settings = ServerSettings.from_mapping(
+        {"TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path)},
+    )
+    assert settings.max_single_pass_document_bytes == 64_000
+    assert settings.absolute_max_single_pass_document_bytes == 2_097_152
+    blank = ServerSettings.from_mapping(
+        {
+            "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+            "TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES": "  ",
+            "TASKCHAMBER_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES": "",
+        }
+    )
+    assert blank.max_single_pass_document_bytes == 64_000
+    assert blank.absolute_max_single_pass_document_bytes == 2_097_152
+
+
+def test_server_settings_process_environment_overrides_dotenv(tmp_path: Path) -> None:
+    from taskchamber.config import ConfigurationView
+
+    process_layer = {
+        "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+        "TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES": "1048576",
+    }
+    dotenv_layer = {"TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES": "64000"}
+    view = ConfigurationView((process_layer, dotenv_layer))  # type: ignore[arg-type]
+    settings = ServerSettings.from_mapping(view)
+    assert settings.max_single_pass_document_bytes == 1_048_576
+
+
+@pytest.mark.parametrize(
+    ("effective", "absolute"),
+    [
+        ("not-an-int", "2097152"),
+        ("64000", "not-an-int"),
+        ("0", "2097152"),
+        ("-1", "2097152"),
+        ("2097153", "2097152"),  # effective > absolute
+    ],
+)
+def test_server_settings_rejects_invalid_or_above_cap_configuration(
+    tmp_path: Path, effective: str, absolute: str
+) -> None:
+    with pytest.raises(ValueError):
+        ServerSettings.from_mapping(
+            {
+                "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+                "TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES": effective,
+                "TASKCHAMBER_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES": absolute,
+            }
+        )
+
+
+def test_server_settings_rejects_default_effective_above_a_lower_absolute(
+    tmp_path: Path,
+) -> None:
+    # effective unset (defaults to 64000) but absolute configured below 64000.
+    with pytest.raises(ValueError):
+        ServerSettings.from_mapping(
+            {
+                "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+                "TASKCHAMBER_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES": "32000",
+            }
+        )
+
+
+def test_server_settings_allows_effective_equal_to_absolute(tmp_path: Path) -> None:
+    settings = ServerSettings.from_mapping(
+        {
+            "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+            "TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES": "1048576",
+            "TASKCHAMBER_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES": "1048576",
+        }
+    )
+    assert settings.max_single_pass_document_bytes == 1_048_576
+    assert settings.absolute_max_single_pass_document_bytes == 1_048_576
+
+
+@pytest.mark.anyio
+async def test_single_pass_accepts_a_document_above_the_default_when_configured(
+    tmp_path: Path,
+) -> None:
+    # A multi-byte document larger than the 64000 default but within a raised
+    # effective limit must enter single_pass successfully.
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    (documents / "big.txt").write_text("测" * 30_000, encoding="utf-8")  # 90_000 bytes
+    runtime = FakeRuntime()
+    service = TaskService(
+        runtime,
+        ServerSettings(
+            workspace_root=tmp_path,
+            max_single_pass_document_bytes=100_000,
+            absolute_max_single_pass_document_bytes=200_000,
+        ),
+        document_sources=DocumentSourceRegistry(
+            {
+                "detail": DirectoryDocumentSource(
+                    DirectoryDocumentSourceConfig(name="detail", root=documents)
+                )
+            }
+        ),
+    )
+
+    result = await service.research(
+        question="Summarize",
+        scope=None,
+        provider="fake",
+        max_turns=None,
+        document_mode="single_pass",
+        document_sources=["detail"],
+        include_workspace=False,
+        requested_capabilities=["documents.read"],
+    )
+
+    assert result.status is TaskStatus.SUCCESS
+    assert runtime.requests  # runtime was invoked with the embedded document
+
+
+@pytest.mark.anyio
+async def test_single_pass_rejects_post_read_utf8_byte_overflow(tmp_path: Path) -> None:
+    # Cover the post-read path: a source that under-reports size_bytes in metadata
+    # but whose actual content exceeds the effective limit must be rejected after
+    # the full read. The DocumentCatalog is exercised directly with a fake source.
+    from taskchamber.core.documents import DocumentCatalog, DocumentInfo, DocumentPage
+
+    class UnderreportingSource:
+        name = "detail"
+
+        async def list_documents(self, *, pattern: object, limit: int) -> tuple[DocumentInfo, ...]:
+            return (
+                DocumentInfo(
+                    source="detail",
+                    document_id="one.txt",
+                    title="one",
+                    media_type="text/plain",
+                    size_bytes=4,  # deliberately below the limit
+                    provenance="test",
+                ),
+            )
+
+        async def read_document(
+            self, document_id: str, *, start_line: int, max_lines: int
+        ) -> DocumentPage:
+            return DocumentPage(
+                document=DocumentInfo(
+                    source="detail",
+                    document_id="one.txt",
+                    title="one",
+                    media_type="text/plain",
+                    size_bytes=4,
+                    provenance="test",
+                ),
+                start_line=1,
+                end_line=1,
+                total_lines=1,
+                content="测" * 30_000,  # 90_000 actual UTF-8 bytes
+            )
+
+        async def search_documents(
+            self, query: str, *, pattern: object, limit: int
+        ) -> tuple[object, ...]:
+            return ()
+
+    catalog = DocumentCatalog({"detail": UnderreportingSource()})  # type: ignore[arg-type]
+    with pytest.raises(Exception) as exc_info:  # SinglePassDocumentTooLargeError
+        await catalog.read_single_document(max_bytes=64_000)
+    error = exc_info.value
+    assert error.observed_utf8_bytes == 90_000  # type: ignore[attr-defined]
+    assert error.effective_limit_bytes == 64_000  # type: ignore[attr-defined]
+    assert error.source == "detail"  # type: ignore[attr-defined]
+    assert error.document_id == "one.txt"  # type: ignore[attr-defined]
+
+
+@pytest.mark.anyio
+async def test_single_pass_byte_limit_counts_bytes_not_characters(tmp_path: Path) -> None:
+    # 30_000 three-byte characters = 90_000 bytes. With effective=70_000 the
+    # metadata preflight (90_000 > 70_000) rejects it, proving the unit is bytes.
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    (documents / "multibyte.txt").write_text("测" * 30_000, encoding="utf-8")
+    runtime = FakeRuntime()
+    service = TaskService(
+        runtime,
+        ServerSettings(
+            workspace_root=tmp_path,
+            max_single_pass_document_bytes=70_000,
+            absolute_max_single_pass_document_bytes=200_000,
+        ),
+        document_sources=DocumentSourceRegistry(
+            {
+                "detail": DirectoryDocumentSource(
+                    DirectoryDocumentSourceConfig(name="detail", root=documents)
+                )
+            }
+        ),
+    )
+    result = await service.research(
+        question="Summarize",
+        scope=None,
+        provider="fake",
+        max_turns=None,
+        document_mode="single_pass",
+        document_sources=["detail"],
+        include_workspace=False,
+        requested_capabilities=["documents.read"],
+    )
+    assert result.status is TaskStatus.INVALID_REQUEST
+    assert result.error_code == "single_pass_document_too_large"
+    assert result.error_details is not None
+    assert result.error_details.observed_utf8_bytes == 90_000  # type: ignore[union-attr]
+    assert runtime.requests == []
+
+
+def test_capability_catalog_reports_the_single_pass_block(tmp_path: Path) -> None:
+    settings = ServerSettings(
+        workspace_root=tmp_path,
+        max_single_pass_document_bytes=1_048_576,
+        absolute_max_single_pass_document_bytes=2_097_152,
+    )
+    service = TaskService(FakeRuntime(), settings)
+    catalog = service.capability_catalog()
+    single_pass = catalog["single_pass"]
+    assert single_pass == {
+        "max_documents": 1,
+        "max_turns": 1,
+        "effective_max_document_bytes": 1_048_576,
+        "host_absolute_max_document_bytes": 2_097_152,
+        "caller_can_raise": False,
+        "oversize_behavior": "error",
+    }
 
 
 @pytest.mark.anyio

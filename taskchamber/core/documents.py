@@ -22,6 +22,32 @@ class DocumentRequestError(DocumentError):
     """The caller or model supplied an invalid document request."""
 
 
+class SinglePassDocumentTooLargeError(DocumentRequestError):
+    """A single-pass document exceeded the effective server byte limit.
+
+    Carries only public virtual identifiers and the server-owned effective
+    limit so the service layer can build safe, typed error details. The host
+    absolute guardrail is intentionally not known here: the document catalog
+    only enforces the effective admission limit and never depends on host
+    deployment configuration.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source: str,
+        document_id: str,
+        observed_utf8_bytes: int,
+        effective_limit_bytes: int,
+    ) -> None:
+        super().__init__(message)
+        self.source = source
+        self.document_id = document_id
+        self.observed_utf8_bytes = observed_utf8_bytes
+        self.effective_limit_bytes = effective_limit_bytes
+
+
 class DocumentSourceError(DocumentError):
     """A configured document source could not produce content."""
 
@@ -199,8 +225,12 @@ class DocumentCatalog:
             )
         document = documents[0]
         if document.size_bytes > max_bytes:
-            raise DocumentRequestError(
-                f"single_pass document exceeds the {max_bytes}-byte server limit"
+            raise SinglePassDocumentTooLargeError(
+                "The selected single-pass document exceeds the configured byte limit.",
+                source=document.source,
+                document_id=document.document_id,
+                observed_utf8_bytes=document.size_bytes,
+                effective_limit_bytes=max_bytes,
             )
         pages: list[str] = []
         start_line = 1
@@ -216,9 +246,14 @@ class DocumentCatalog:
                 break
             start_line = page.end_line + 1
         content = "\n".join(pages)
-        if len(content.encode("utf-8")) > max_bytes:
-            raise DocumentRequestError(
-                f"single_pass document exceeds the {max_bytes}-byte server limit"
+        observed = len(content.encode("utf-8"))
+        if observed > max_bytes:
+            raise SinglePassDocumentTooLargeError(
+                "The selected single-pass document exceeds the configured byte limit.",
+                source=document.source,
+                document_id=document.document_id,
+                observed_utf8_bytes=observed,
+                effective_limit_bytes=max_bytes,
             )
         return document, content
 
@@ -310,4 +345,5 @@ __all__ = [
     "DocumentSourceError",
     "DocumentSourceResolver",
     "PreparedDocumentSource",
+    "SinglePassDocumentTooLargeError",
 ]
