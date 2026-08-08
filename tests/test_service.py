@@ -15,6 +15,7 @@ from taskchamber.core.capabilities import (
     WorkspaceAccessPolicy,
 )
 from taskchamber.core.contracts import AgentCapabilities, TaskKind, TaskResult, TaskStatus
+from taskchamber.core.documents import SinglePassDocumentTooLargeError
 from taskchamber.core.service import ServerSettings, TaskService
 from taskchamber.runtimes.fake import FakeRuntime
 
@@ -549,13 +550,13 @@ async def test_single_pass_rejects_post_read_utf8_byte_overflow(tmp_path: Path) 
             return ()
 
     catalog = DocumentCatalog({"detail": UnderreportingSource()})  # type: ignore[arg-type]
-    with pytest.raises(Exception) as exc_info:  # SinglePassDocumentTooLargeError
+    with pytest.raises(SinglePassDocumentTooLargeError) as exc_info:
         await catalog.read_single_document(max_bytes=64_000)
     error = exc_info.value
-    assert error.observed_utf8_bytes == 90_000  # type: ignore[attr-defined]
-    assert error.effective_limit_bytes == 64_000  # type: ignore[attr-defined]
-    assert error.source == "detail"  # type: ignore[attr-defined]
-    assert error.document_id == "one.txt"  # type: ignore[attr-defined]
+    assert error.observed_utf8_bytes == 90_000
+    assert error.effective_limit_bytes == 64_000
+    assert error.source == "detail"
+    assert error.document_id == "one.txt"
 
 
 @pytest.mark.anyio
@@ -615,6 +616,56 @@ def test_capability_catalog_reports_the_single_pass_block(tmp_path: Path) -> Non
         "caller_can_raise": False,
         "oversize_behavior": "error",
     }
+
+
+def test_server_settings_rejects_an_absolute_limit_below_one(tmp_path: Path) -> None:
+    # Direct construction must fail closed when the absolute guardrail is not positive,
+    # even though from_mapping's effective-default would also catch it upstream.
+    with pytest.raises(ValueError, match="absolute_max_single_pass_document_bytes"):
+        ServerSettings(
+            workspace_root=tmp_path,
+            max_single_pass_document_bytes=1,
+            absolute_max_single_pass_document_bytes=0,
+        )
+
+
+@pytest.mark.anyio
+async def test_review_task_path_maps_an_oversized_single_pass_document(tmp_path: Path) -> None:
+    # The summarize/review catch site must route oversized documents through the
+    # same stable code and typed details as the research path.
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    (documents / "record.txt").write_text("oversized record body", encoding="utf-8")
+    runtime = FakeRuntime()
+    service = TaskService(
+        runtime,
+        ServerSettings(workspace_root=tmp_path, max_single_pass_document_bytes=4),
+        document_sources=DocumentSourceRegistry(
+            {
+                "detail": DirectoryDocumentSource(
+                    DirectoryDocumentSourceConfig(name="detail", root=documents)
+                )
+            }
+        ),
+    )
+
+    result = await service.review(
+        file_path=None,
+        provider="fake",
+        max_turns=None,
+        document_mode="single_pass",
+        document_sources=["detail"],
+        requested_capabilities=["documents.read"],
+    )
+
+    assert result.status is TaskStatus.INVALID_REQUEST
+    assert result.error_code == "single_pass_document_too_large"
+    assert result.error_details is not None
+    assert result.error_details.type == "single_pass_document_too_large"  # type: ignore[union-attr]
+    assert result.error_details.source == "detail"  # type: ignore[union-attr]
+    assert result.error_details.effective_limit_bytes == 4  # type: ignore[union-attr]
+    assert result.error_details.absolute_limit_bytes == 2_097_152  # type: ignore[union-attr]
+    assert runtime.requests == []
 
 
 @pytest.mark.anyio
