@@ -101,7 +101,8 @@ Rules:
 - Process environment takes precedence over `.env`.
 - MCP callers cannot raise either limit through a per-call parameter.
 - The `absolute` value is a deployment guardrail, not an independent security
-  boundary; it exists to catch operator mistakes, not to replace it.
+  boundary; it catches accidental effective-limit misconfiguration within the
+  trusted host configuration boundary.
 
 The effective and absolute ceilings are published (without their configuration
 source) in the `taskchamber://capabilities` resource under the `single_pass`
