@@ -57,6 +57,10 @@ async def test_mcp_contract_publishes_tools_and_structured_results(tmp_path: Pat
         assert "document_mode" in tools["research"].inputSchema["properties"]
         assert "max_output_chars" in tools["research"].inputSchema["properties"]
         assert "requested_capabilities" in tools["review"].inputSchema["properties"]
+        # No per-call parameter lets a caller raise the single-pass input ceiling.
+        assert "max_single_pass_document_bytes" not in tools["research"].inputSchema["properties"]
+        # The typed error_details is published as an optional output field.
+        assert "error_details" in tools["research"].outputSchema["properties"]  # type: ignore[index]
 
         resources = (await session.list_resources()).resources
         assert [str(resource.uri) for resource in resources] == ["taskchamber://capabilities"]
@@ -64,6 +68,16 @@ async def test_mcp_contract_publishes_tools_and_structured_results(tmp_path: Pat
         catalog = json.loads(capability_resource.contents[0].text)
         assert "workspace.read" in catalog["capabilities"]
         assert "executable" not in capability_resource.contents[0].text
+        assert catalog["single_pass"] == {
+            "max_documents": 1,
+            "max_turns": 1,
+            "effective_max_document_bytes": 64_000,
+            "host_absolute_max_document_bytes": 2_097_152,
+            "caller_can_raise": False,
+            "oversize_behavior": "error",
+        }
+        # The capabilities resource must not reveal the configuration source.
+        assert "TASKCHAMBER_MAX_SINGLE_PASS" not in capability_resource.contents[0].text
 
         result = await session.call_tool(
             "research",
@@ -250,6 +264,61 @@ async def test_mcp_file_tools_run_single_pass_without_document_tools(
     assert result.structuredContent["num_turns"] == 1
     assert result.structuredContent["execution"]["document_sources"] == ["record"]
     assert result.structuredContent["execution"]["document_tools"] == []
+
+
+@pytest.mark.anyio
+async def test_mcp_single_pass_oversize_returns_typed_error_details(tmp_path: Path) -> None:
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    (documents / "record.txt").write_text("x" * 100, encoding="utf-8")
+
+    runtime = FakeRuntime()
+    server = create_server(
+        TaskService(
+            runtime,
+            ServerSettings(
+                workspace_root=tmp_path,
+                default_profile="fake-profile",
+                max_single_pass_document_bytes=4,
+            ),
+            document_sources=DocumentSourceRegistry(
+                {
+                    "record": DirectoryDocumentSource(
+                        DirectoryDocumentSourceConfig(name="record", root=documents)
+                    )
+                }
+            ),
+        )
+    )
+
+    async with create_connected_server_and_client_session(server) as session:
+        result = await session.call_tool(
+            "research",
+            {
+                "question": "Summarize the record",
+                "document_mode": "single_pass",
+                "document_sources": ["record"],
+                "include_workspace": False,
+                "requested_capabilities": ["documents.read"],
+                "max_turns": 1,
+            },
+        )
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    assert result.structuredContent["status"] == "invalid_request"
+    assert result.structuredContent["error_code"] == "single_pass_document_too_large"
+    details = result.structuredContent["error_details"]
+    assert details["type"] == "single_pass_document_too_large"
+    assert details["document_mode"] == "single_pass"
+    assert details["source"] == "record"
+    assert details["document_id"] == "record.txt"
+    assert details["observed_utf8_bytes"] == 100
+    assert details["effective_limit_bytes"] == 4
+    assert details["absolute_limit_bytes"] == 2_097_152
+    assert details["retryable"] is False
+    # The host workspace path must not leak into the structured response.
+    assert str(tmp_path) not in json.dumps(result.structuredContent)
 
 
 @pytest.mark.anyio

@@ -82,6 +82,45 @@ execution. `max_output_chars` may only reduce the server's configured output
 cap. Larger catalogs should retain the default `agentic` mode so the inner
 runtime can list, search, and page documents.
 
+### Configuring the single-pass byte limit
+
+The single-pass admission limit is host-owned and exposed as two environment
+settings, both optional:
+
+- `TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES` — the **effective** admission
+  limit a document must fit within. Default: `64000`.
+- `TASKCHAMBER_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES` — a host-owned
+  deployment guardrail the effective limit may not exceed. Default: `2097152`.
+
+Rules:
+
+- Both values must be positive integers and satisfy
+  `1 <= effective <= absolute`.
+- Unset or blank values keep the defaults; invalid, zero, negative, or
+  `effective > absolute` values fail during server startup.
+- Process environment takes precedence over `.env`.
+- MCP callers cannot raise either limit through a per-call parameter.
+- The `absolute` value is a deployment guardrail, not an independent security
+  boundary; it catches accidental effective-limit misconfiguration within the
+  trusted host configuration boundary.
+
+The effective and absolute ceilings are published (without their configuration
+source) in the `taskchamber://capabilities` resource under the `single_pass`
+key. An oversized document returns `error_code = single_pass_document_too_large`
+with typed `error_details` (source name, virtual document ID, observed UTF-8
+bytes, effective and absolute limits, `retryable = false`); it is never
+silently truncated or switched to agentic mode.
+
+When raising the limit for a large-context model, remember:
+
+- The unit is **UTF-8 bytes**, not character count and not model tokens. A
+  multi-byte document can be far larger in bytes than its character count.
+- The document limit is independent of `max_output_chars`, which caps output.
+- Operators must leave headroom in the model's context window for the system
+  prompt, the wrapper text, MCP protocol data, and model output. The document
+  limit bounds only the embedded document.
+- Changing either value requires a full restart of the stdio MCP server.
+
 ## Multiple directory sources
 
 Configure each root independently, then select any combination in one research

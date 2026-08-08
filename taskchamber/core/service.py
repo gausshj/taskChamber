@@ -25,6 +25,7 @@ from .contracts import (
     DocumentSourceSelection,
     ExecutionPolicy,
     ExecutionTelemetry,
+    SinglePassDocumentTooLargeDetails,
     TaskKind,
     TaskRequest,
     TaskResult,
@@ -35,6 +36,7 @@ from .documents import (
     DocumentRequestError,
     DocumentSourceError,
     DocumentSourceResolver,
+    SinglePassDocumentTooLargeError,
 )
 from .policy import PolicyDeniedError, RequestValidationError, WorkspaceGuard, validate_text
 from .workspace import WorkspaceSelector
@@ -80,6 +82,13 @@ PRESETS: dict[TaskKind, TaskPreset] = {
     ),
 }
 
+MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE = "TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES"
+ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE = (
+    "TASKCHAMBER_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES"
+)
+DEFAULT_MAX_SINGLE_PASS_DOCUMENT_BYTES = 64_000
+DEFAULT_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES = 2_097_152
+
 
 @dataclass(frozen=True)
 class ServerSettings:
@@ -91,7 +100,8 @@ class ServerSettings:
     timeout_seconds: float = 120.0
     max_output_chars: int = 12_000
     max_file_bytes: int = 1_000_000
-    max_single_pass_document_bytes: int = 64_000
+    max_single_pass_document_bytes: int = DEFAULT_MAX_SINGLE_PASS_DOCUMENT_BYTES
+    absolute_max_single_pass_document_bytes: int = DEFAULT_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES
     max_concurrency: int = 1
 
     def __post_init__(self) -> None:
@@ -102,8 +112,18 @@ class ServerSettings:
             raise ValueError("max_concurrency must be at least one")
         if self.max_output_chars < 1:
             raise ValueError("max_output_chars must be at least one")
-        if self.max_single_pass_document_bytes < 1:
-            raise ValueError("max_single_pass_document_bytes must be at least one")
+        effective = _require_positive_int(
+            self.max_single_pass_document_bytes, field="max_single_pass_document_bytes"
+        )
+        absolute = _require_positive_int(
+            self.absolute_max_single_pass_document_bytes,
+            field="absolute_max_single_pass_document_bytes",
+        )
+        if effective > absolute:
+            raise ValueError(
+                "max_single_pass_document_bytes must not exceed "
+                "absolute_max_single_pass_document_bytes"
+            )
         if not self.default_profile.strip():
             raise ValueError("default_profile must not be empty")
         object.__setattr__(self, "workspace_root", root)
@@ -127,7 +147,46 @@ class ServerSettings:
             default_profile=(
                 values.get("TASKCHAMBER_DEFAULT_PROFILE", default_profile) or default_profile
             ),
+            max_single_pass_document_bytes=_positive_int_setting(
+                values.get(MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE),
+                default=DEFAULT_MAX_SINGLE_PASS_DOCUMENT_BYTES,
+                field=MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE,
+            ),
+            absolute_max_single_pass_document_bytes=_positive_int_setting(
+                values.get(ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE),
+                default=DEFAULT_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES,
+                field=ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE,
+            ),
         )
+
+
+def _positive_int_setting(raw: str | None, *, default: int, field: str) -> int:
+    """Parse a host-owned positive integer, preserving the default when unset."""
+
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be a positive integer") from exc
+    if value < 1:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _require_positive_int(value: object, *, field: str) -> int:
+    """Reject non-integers (including bool and float) before the positivity check.
+
+    The public ``ServerSettings(...)`` constructor must fail closed for illegal
+    configuration, so a ``True`` or ``4.5`` value cannot slip past the ``< 1``
+    guard and surface as an uncaught error during a later request.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be a positive integer")
+    if value < 1:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
 
 
 class TaskService:
@@ -174,6 +233,16 @@ class TaskService:
                 "max_requested_paths": self.project_policy.workspace.max_requested_paths,
             },
             "document_sources": document_sources,
+            "single_pass": {
+                "max_documents": 1,
+                "max_turns": 1,
+                "effective_max_document_bytes": self.settings.max_single_pass_document_bytes,
+                "host_absolute_max_document_bytes": (
+                    self.settings.absolute_max_single_pass_document_bytes
+                ),
+                "caller_can_raise": False,
+                "oversize_behavior": "error",
+            },
             "guidance": (
                 "Use canonical names or listed aliases. Invalid values return suggestions. "
                 "Retry only with a listed value and never fall back to shell execution."
@@ -285,10 +354,9 @@ class TaskService:
                 single_pass=single_pass,
             )
         except DocumentRequestError as exc:
-            return self._error(
+            return self._document_request_error(
                 TaskKind.RESEARCH,
                 provider,
-                TaskStatus.INVALID_REQUEST,
                 exc,
                 effective_max_output_chars=output_limit,
             )
@@ -504,10 +572,9 @@ class TaskService:
                 single_pass=single_pass,
             )
         except DocumentRequestError as exc:
-            return self._error(
+            return self._document_request_error(
                 kind,
                 provider,
-                TaskStatus.INVALID_REQUEST,
                 exc,
                 effective_max_output_chars=output_limit,
             )
@@ -799,6 +866,46 @@ class TaskService:
         }
         return messages.get(status, "The task did not complete successfully.")
 
+    def _document_request_error(
+        self,
+        kind: TaskKind,
+        provider: str,
+        error: DocumentRequestError,
+        *,
+        effective_max_output_chars: int | None,
+    ) -> TaskResult:
+        """Map a document request error without duplicating branches at each catch site.
+
+        An oversized single-pass document gets a stable code and typed details that
+        carry only public virtual identifiers and server-owned byte counts; the host
+        absolute guardrail is read here from host settings, never from the document
+        layer. Any other document request error keeps the generic invalid-request code.
+        """
+
+        if isinstance(error, SinglePassDocumentTooLargeError):
+            return self._error(
+                kind,
+                provider,
+                TaskStatus.INVALID_REQUEST,
+                error,
+                error_code="single_pass_document_too_large",
+                effective_max_output_chars=effective_max_output_chars,
+                error_details=SinglePassDocumentTooLargeDetails(
+                    source=error.source,
+                    document_id=error.document_id,
+                    observed_utf8_bytes=error.observed_utf8_bytes,
+                    effective_limit_bytes=error.effective_limit_bytes,
+                    absolute_limit_bytes=self.settings.absolute_max_single_pass_document_bytes,
+                ),
+            )
+        return self._error(
+            kind,
+            provider,
+            TaskStatus.INVALID_REQUEST,
+            error,
+            effective_max_output_chars=effective_max_output_chars,
+        )
+
     def _error(
         self,
         kind: TaskKind,
@@ -809,6 +916,7 @@ class TaskService:
         run_id: str | None = None,
         error_code: str | None = None,
         effective_max_output_chars: int | None = None,
+        error_details: SinglePassDocumentTooLargeDetails | None = None,
     ) -> TaskResult:
         return TaskResult(
             run_id=run_id or uuid4().hex,
@@ -819,6 +927,7 @@ class TaskService:
             effective_max_output_chars=effective_max_output_chars,
             error_code=error_code or status.value,
             error_message=str(error),
+            error_details=error_details,
         )
 
     def _document_selections(
