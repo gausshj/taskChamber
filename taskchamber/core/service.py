@@ -124,10 +124,6 @@ class ServerSettings:
                 "max_single_pass_document_bytes must not exceed "
                 "absolute_max_single_pass_document_bytes"
             )
-            raise ValueError(
-                "max_single_pass_document_bytes must not exceed "
-                "absolute_max_single_pass_document_bytes"
-            )
         if not self.default_profile.strip():
             raise ValueError("default_profile must not be empty")
         object.__setattr__(self, "workspace_root", root)
