@@ -483,6 +483,27 @@ def test_rebindable_executable_rejects_a_missing_component(tmp_path: Path) -> No
         _verify_rebindable_executable(masked_root / "gone" / "claude", masked_root)
 
 
+def test_rebindable_executable_rejects_an_unreadable_masked_root(tmp_path: Path) -> None:
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    missing_root = tmp_path / "gone"
+
+    with pytest.raises(ValueError, match="the masked root is unreadable"):
+        _verify_rebindable_executable(missing_root / "tools" / "claude", missing_root)
+
+
+def test_rebindable_executable_rejects_a_symlink_masked_root(tmp_path: Path) -> None:
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target)
+
+    with pytest.raises(ValueError, match="the masked root changed after canonicalization"):
+        _verify_rebindable_executable(link / "tools" / "claude", link)
+
+
 def test_native_tool_basenames_are_canonicalized_before_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
