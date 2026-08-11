@@ -110,8 +110,7 @@ class ServerSettings:
             raise ValueError(f"workspace root is not a directory: {root}")
         if self.max_concurrency < 1:
             raise ValueError("max_concurrency must be at least one")
-        if self.max_output_chars < 1:
-            raise ValueError("max_output_chars must be at least one")
+        _require_positive_int(self.max_output_chars, field="max_output_chars")
         effective = _require_positive_int(
             self.max_single_pass_document_bytes, field="max_single_pass_document_bytes"
         )

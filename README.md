@@ -101,7 +101,8 @@ the server-owned system prompt asks the model for a complete response within
 that budget (`research`, `summarize`, and `review` alike). This is generation
 guidance, not enforcement — the hard character cap still applies after
 generation, and over-limit output keeps the `partial=true` / `truncated=true`
-signals with the `[output truncated by server policy]` marker.
+signals (plus the `[output truncated by server policy]` marker when the
+effective limit is large enough to hold it).
 
 All three tasks can use the project-configured capability policy. `research`
 can select named external directory or CLI/API-backed document sources and set

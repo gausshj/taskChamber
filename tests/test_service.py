@@ -373,6 +373,17 @@ def test_server_settings_defaults_preserve_the_current_behavior(tmp_path: Path) 
     assert settings.absolute_max_single_pass_document_bytes == 2_097_152
 
 
+@pytest.mark.parametrize("value", [True, 4.5, 0, -3, "100"])
+def test_server_settings_rejects_non_integer_max_output_chars(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    # Direct construction must fail closed: a bool or float limit would leak
+    # into the generation-budget instruction and the post-hoc slicing.
+    with pytest.raises(ValueError, match="max_output_chars must be a positive integer"):
+        ServerSettings(workspace_root=tmp_path, max_output_chars=value)  # type: ignore[arg-type]
+
+
 def test_server_settings_loads_both_limits_from_mapping(tmp_path: Path) -> None:
     settings = ServerSettings.from_mapping(
         {
