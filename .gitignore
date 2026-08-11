@@ -11,6 +11,7 @@ __pycache__/
 .coverage.*
 coverage.xml
 htmlcov/
+.scannerwork/
 .DS_Store
 .idea/
 .vscode/
