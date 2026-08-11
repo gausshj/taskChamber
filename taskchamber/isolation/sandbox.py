@@ -720,6 +720,8 @@ def _verify_rebindable_executable(executable: Path, masked_root: Path) -> None:
         raise ValueError("the masked root is unreadable") from exc
     if stat.S_ISLNK(root_metadata.st_mode):
         raise ValueError("the masked root changed after canonicalization")
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise ValueError("the masked root is not a directory")
     if root_metadata.st_uid not in {euid, 0}:
         raise ValueError("the masked root is owned by another user")
     if root_metadata.st_mode & 0o022 and not root_metadata.st_mode & stat.S_ISVTX:
@@ -728,6 +730,10 @@ def _verify_rebindable_executable(executable: Path, masked_root: Path) -> None:
     components = [executable]
     parent = executable.parent
     while parent != masked_root:
+        if not parent.is_relative_to(masked_root):
+            # The caller guarantees this containment; the check keeps the walk
+            # bounded even if that guarantee is ever broken.
+            raise ValueError("the selected CLI is not below the masked root")
         components.append(parent)
         parent = parent.parent
     for component in components:

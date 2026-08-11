@@ -507,6 +507,32 @@ def test_rebindable_executable_rejects_a_symlink_masked_root(tmp_path: Path) -> 
         _verify_rebindable_executable(link / "tools" / "claude", link)
 
 
+def test_rebindable_executable_rejects_a_regular_file_masked_root(tmp_path: Path) -> None:
+    # A home-style masked root misconfigured as the executable file itself must
+    # fail closed immediately instead of walking parents forever.
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    not_a_directory = tmp_path / "claude"
+    not_a_directory.write_text("binary placeholder", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="the masked root is not a directory"):
+        _verify_rebindable_executable(not_a_directory, not_a_directory)
+
+
+def test_rebindable_executable_bounds_the_walk_to_the_masked_root(tmp_path: Path) -> None:
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    masked_root = tmp_path / "masked-tmp"
+    masked_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cli = outside / "claude"
+    cli.write_text("binary placeholder", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not below the masked root"):
+        _verify_rebindable_executable(cli, masked_root)
+
+
 def test_native_tool_basenames_are_canonicalized_before_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
