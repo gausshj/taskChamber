@@ -447,12 +447,15 @@ def test_check_rebind_metadata_accepts_and_rejects_expected_components() -> None
     _check_rebind_metadata(_stat_result(stat_module.S_IFREG | 0o700, euid), euid=euid)
     _check_rebind_metadata(_stat_result(stat_module.S_IFDIR | 0o755, 0), euid=euid)
 
+    symlinked = _stat_result(stat_module.S_IFLNK | 0o777, euid)
     with pytest.raises(ValueError, match="changed after canonicalization"):
-        _check_rebind_metadata(_stat_result(stat_module.S_IFLNK | 0o777, euid), euid=euid)
+        _check_rebind_metadata(symlinked, euid=euid)
+    foreign_owned = _stat_result(stat_module.S_IFREG | 0o700, 1_000_001)
     with pytest.raises(ValueError, match="owned by another user"):
-        _check_rebind_metadata(_stat_result(stat_module.S_IFREG | 0o700, 1_000_001), euid=euid)
+        _check_rebind_metadata(foreign_owned, euid=euid)
+    world_writable = _stat_result(stat_module.S_IFREG | 0o666, euid)
     with pytest.raises(ValueError, match="writable by group or others"):
-        _check_rebind_metadata(_stat_result(stat_module.S_IFREG | 0o666, euid), euid=euid)
+        _check_rebind_metadata(world_writable, euid=euid)
 
 
 def test_rebindable_executable_rejects_a_symlink_component_after_canonicalization(
