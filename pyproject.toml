@@ -40,6 +40,12 @@ Repository = "https://github.com/gausshj/taskChamber"
 [project.scripts]
 taskchamber = "taskchamber.cli:main"
 
+[tool.uv]
+# Pin the isolated PEP 517 build backend so `uv sync`, `uv run`, and
+# `uv build` never resolve a floating hatchling. Keep this pin in sync with
+# [build-system] requires and update it deliberately.
+build-constraint-dependencies = ["hatchling==1.32.0"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["taskchamber"]
 
