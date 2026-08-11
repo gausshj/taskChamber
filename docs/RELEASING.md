@@ -31,12 +31,17 @@ and request a short-lived OIDC publishing credential.
 
    ```bash
    uv sync --locked --all-groups
-   uv run pre-commit run --all-files --show-diff-on-failure
-   uv run pytest -q
+   uv run --no-sync --no-build pre-commit run --all-files --show-diff-on-failure
+   uv run --no-sync --no-build pytest -q
    uv build --no-sources
-   uv run python scripts/check_distribution.py dist
-   uv run python scripts/test_uv_tool_install.py dist/*.whl
+   uv run --no-sync --no-build python scripts/check_distribution.py dist
+   uv run --no-sync --no-build python scripts/test_uv_tool_install.py dist/*.whl
    ```
+
+   The isolated PEP 517 build backend (`hatchling`), which `uv.lock` does not
+   cover, is pinned by `tool.uv build-constraint-dependencies` in
+   `pyproject.toml`. uv applies that pin to `sync`, `run`, and `build` alike;
+   update it deliberately whenever `build-system.requires` changes.
 
    The bundled runtime extras pin their adapter SDK versions. Updating one is a
    compatibility change that requires the focused adapter tests and a new
