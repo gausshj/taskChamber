@@ -30,6 +30,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -488,7 +489,9 @@ class BubblewrapSandbox(_StagingSandbox):
 
         # Hiding HOME and /tmp can also hide the selected executable. Expose only
         # its canonical file below the most specific masked root. Empty parent
-        # directories reveal no adjacent content.
+        # directories reveal no adjacent content. The masked root itself may be
+        # publicly writable (e.g. sticky /tmp), so the rebound path must not be
+        # replaceable by another local user.
         masked_roots = tuple(
             sorted(
                 {Path("/tmp"), *masked_homes} - {Path("/")},
@@ -501,6 +504,7 @@ class BubblewrapSandbox(_StagingSandbox):
             None,
         )
         if masked_root is not None:
+            _verify_rebindable_executable(resolved_executable, masked_root)
             directory = masked_root
             for part in resolved_executable.parent.relative_to(masked_root).parts:
                 directory /= part
@@ -691,6 +695,37 @@ def _observed_cli_argv(executable: str, marker: Path) -> list[str]:
         executable,
         str(marker),
     ]
+
+
+def _verify_rebindable_executable(executable: Path, masked_root: Path) -> None:
+    """Fail closed when a masked-root executable can be swapped by another user.
+
+    ``executable`` is already canonical. Every component below the masked root
+    (the root itself is excluded: a sticky, root-owned ``/tmp`` is acceptable)
+    must be a real filesystem object owned by the effective user or root and
+    must not be group/world-writable. A symlink component after
+    canonicalization means the path changed between resolution and launch.
+    Same-uid replacement remains possible by construction; the boundary
+    enforced here is against other local users.
+    """
+
+    components = [executable]
+    parent = executable.parent
+    while parent != masked_root:
+        components.append(parent)
+        parent = parent.parent
+    euid = os.geteuid()
+    for component in components:
+        try:
+            metadata = component.lstat()
+        except OSError as exc:
+            raise ValueError("the selected CLI is unreadable below a masked root") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("the selected CLI path changed after canonicalization")
+        if metadata.st_uid not in {euid, 0}:
+            raise ValueError("the selected CLI is owned by another user below a masked root")
+        if metadata.st_mode & 0o022:
+            raise ValueError("the selected CLI is writable by group or others below a masked root")
 
 
 def _reject_masked_paths(paths: tuple[Path, ...], masked_roots: tuple[Path, ...]) -> None:
