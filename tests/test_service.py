@@ -726,6 +726,104 @@ async def test_caller_can_only_reduce_output_limit(tmp_path: Path) -> None:
     assert expanded.status is TaskStatus.POLICY_DENIED
 
 
+@pytest.mark.parametrize("kind", ["research", "summarize", "review"])
+@pytest.mark.anyio
+async def test_system_prompt_carries_validated_output_budget(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    (tmp_path / "note.txt").write_text("fixture body", encoding="utf-8")
+    runtime = FakeRuntime()
+    service = TaskService(runtime, ServerSettings(workspace_root=tmp_path))
+
+    if kind == "research":
+        await service.research(question="q", scope=None, provider="fake", max_turns=1)
+    elif kind == "summarize":
+        await service.summarize(file_path="note.txt", focus=None, provider="fake", max_turns=1)
+    else:
+        await service.review(file_path="note.txt", provider="fake", max_turns=1)
+
+    policy = runtime.policies[0]
+    assert policy.max_output_chars == 12_000
+    assert (
+        "Return a complete response within at most 12000 characters. "
+        "Prioritize the requested answer over exhaustive detail and finish any "
+        "list or structure cleanly." in policy.system_prompt
+    )
+
+
+@pytest.mark.anyio
+async def test_system_prompt_budget_reflects_caller_reduced_limit(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    service = TaskService(runtime, ServerSettings(workspace_root=tmp_path))
+
+    result = await service.research(
+        question="q",
+        scope=None,
+        provider="fake",
+        max_turns=1,
+        max_output_chars=500,
+    )
+
+    policy = runtime.policies[0]
+    assert result.status is TaskStatus.SUCCESS
+    assert policy.max_output_chars == 500
+    assert "at most 500 characters" in policy.system_prompt
+    assert "12000" not in policy.system_prompt
+
+
+@pytest.mark.anyio
+async def test_over_limit_output_stays_truncated_with_budget_instruction(
+    tmp_path: Path,
+) -> None:
+    async def verbose(request, _policy):
+        return TaskResult(
+            run_id=request.run_id,
+            kind=request.kind,
+            status=TaskStatus.SUCCESS,
+            output="x" * 200,
+        )
+
+    runtime = FakeRuntime(handler=verbose)
+    service = TaskService(runtime, ServerSettings(workspace_root=tmp_path))
+
+    result = await service.research(
+        question="q",
+        scope=None,
+        provider="fake",
+        max_turns=1,
+        max_output_chars=100,
+    )
+
+    assert "at most 100 characters" in runtime.policies[0].system_prompt
+    assert len(result.output) == 100
+    assert result.output.endswith("[output truncated by server policy]")
+    assert result.partial is True
+    assert result.truncated is True
+    assert result.effective_max_output_chars == 100
+
+
+@pytest.mark.anyio
+async def test_under_limit_output_is_unchanged_with_budget_instruction(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeRuntime()
+    service = TaskService(runtime, ServerSettings(workspace_root=tmp_path))
+
+    result = await service.research(
+        question="q",
+        scope=None,
+        provider="fake",
+        max_turns=1,
+        max_output_chars=100,
+    )
+
+    assert result.output == "fake research result"
+    assert result.partial is False
+    assert result.truncated is False
+    assert result.effective_max_output_chars == 100
+
+
 @pytest.mark.anyio
 async def test_runtime_exception_preserves_effective_output_limit(tmp_path: Path) -> None:
     async def crash(_request, _policy):

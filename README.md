@@ -96,6 +96,13 @@ the wire envelope also contains the legacy text copy, so the total response
 size is not limited to `max_output_chars`; use `metadata_only` when the
 client-visible envelope size must track the configured output bound.
 
+The validated effective limit is also passed to the runtime before generation:
+the server-owned system prompt asks the model for a complete response within
+that budget (`research`, `summarize`, and `review` alike). This is generation
+guidance, not enforcement — the hard character cap still applies after
+generation, and over-limit output keeps the `partial=true` / `truncated=true`
+signals with the `[output truncated by server policy]` marker.
+
 All three tasks can use the project-configured capability policy. `research`
 can select named external directory or CLI/API-backed document sources and set
 `include_workspace=false`; `summarize` and `review` may use them as selected

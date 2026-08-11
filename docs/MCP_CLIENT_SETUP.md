@@ -130,6 +130,13 @@ contains the legacy text copy, so the total response size is not limited to
 `max_output_chars`; in `metadata_only` mode the client-visible success envelope
 tracks the configured output bound.
 
+The validated effective limit (host ceiling, optionally reduced per call) is
+also given to the runtime before generation as a server-owned system-prompt
+instruction asking for a complete response within that budget. That guidance
+encourages compact, cleanly finished answers, but model compliance is not
+guaranteed: the post-hoc character cap remains the authoritative boundary, and
+over-limit results still return `partial=true` and `truncated=true`.
+
 ## Persistent project registration
 
 Only after the temporary test succeeds, generate a server object and ask Claude
