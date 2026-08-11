@@ -31,11 +31,11 @@ and request a short-lived OIDC publishing credential.
 
    ```bash
    uv sync --locked --all-groups
-   uv run --no-sync pre-commit run --all-files --show-diff-on-failure
-   uv run --no-sync pytest -q
+   uv run --no-sync --no-build pre-commit run --all-files --show-diff-on-failure
+   uv run --no-sync --no-build pytest -q
    uv build --no-sources --build-constraints build-constraints.txt --require-hashes
-   uv run --no-sync python scripts/check_distribution.py dist
-   uv run --no-sync python scripts/test_uv_tool_install.py dist/*.whl
+   uv run --no-sync --no-build python scripts/check_distribution.py dist
+   uv run --no-sync --no-build python scripts/test_uv_tool_install.py dist/*.whl
    ```
 
    `build-constraints.txt` pins and hash-verifies the isolated PEP 517 build

@@ -46,13 +46,13 @@ jobs:
       - name: Install the locked development environment
         run: uv sync --locked --all-groups
 
-      # After the locked sync, uv run uses --no-sync so checks can neither
-      # re-resolve nor rebuild the project.
+      # After the locked sync, uv run uses --no-sync --no-build so checks can
+      # neither re-resolve nor rebuild the project.
       - name: Run repository checks
-        run: uv run --no-sync pre-commit run --all-files --show-diff-on-failure
+        run: uv run --no-sync --no-build pre-commit run --all-files --show-diff-on-failure
 
       - name: Run tests
-        run: uv run --no-sync pytest -q
+        run: uv run --no-sync --no-build pytest -q
 
       # Deliberate distribution build inside the release trust boundary.
       # Isolated PEP 517 build requirements are pinned and hash-verified
@@ -64,11 +64,11 @@ jobs:
           --require-hashes
 
       - name: Audit distribution contents and metadata
-        run: uv run --no-sync python scripts/check_distribution.py dist
+        run: uv run --no-sync --no-build python scripts/check_distribution.py dist
 
       # Deliberate installation verification of the just-built wheel.
       - name: Test repeatable uv tool installation
-        run: uv run --no-sync python scripts/test_uv_tool_install.py dist/*.whl
+        run: uv run --no-sync --no-build python scripts/test_uv_tool_install.py dist/*.whl
 
       - name: Upload verified distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
