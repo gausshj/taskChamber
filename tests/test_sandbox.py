@@ -366,7 +366,8 @@ def test_bwrap_wrapper_rejects_a_rebind_owned_by_another_user(
 ) -> None:
     _, cli, _ = _prepare_masked_root_rebind(tmp_path, monkeypatch)
     # Simulate foreign ownership without chown: from the process's perspective
-    # the euid no longer matches the component owner.
+    # the euid no longer matches the masked root owner, so the anchor check
+    # fails before any component is trusted.
     monkeypatch.setattr("taskchamber.isolation.sandbox.os.geteuid", lambda: 1_000_001)
     source = tmp_path / "source"
     source.mkdir()
@@ -380,6 +381,78 @@ def test_bwrap_wrapper_rejects_a_rebind_owned_by_another_user(
                 config_dir=tmp_path / "config",
                 launcher_dir=tmp_path / "launcher",
             )
+
+
+def test_bwrap_wrapper_rejects_a_non_sticky_world_writable_masked_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A misconfigured home-style root (0o777 without the sticky bit) lets any
+    # local user replace the first component below it after validation, so the
+    # rebind must fail closed even when every component below is clean.
+    masked_root, cli, _ = _prepare_masked_root_rebind(
+        tmp_path, monkeypatch, mode_dir=0o755, mode_file=0o700
+    )
+    masked_root.chmod(0o777)
+    source = tmp_path / "source"
+    source.mkdir()
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    with sandbox.isolate(_policy(source)) as workspace:
+        with pytest.raises(ValueError, match="writable without a sticky bit"):
+            sandbox.prepare_wrapper(
+                workspace,
+                executable=str(cli),
+                config_dir=tmp_path / "config",
+                launcher_dir=tmp_path / "launcher",
+            )
+
+
+def test_bwrap_wrapper_accepts_a_sticky_world_writable_masked_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The sticky bit is what makes a root-owned /tmp a safe anchor: other users
+    # cannot rename or replace entries they do not own.
+    masked_root, cli, _ = _prepare_masked_root_rebind(
+        tmp_path, monkeypatch, mode_dir=0o755, mode_file=0o700
+    )
+    masked_root.chmod(0o1777)
+    source = tmp_path / "source"
+    source.mkdir()
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    with sandbox.isolate(_policy(source)) as workspace:
+        wrapper = sandbox.prepare_wrapper(
+            workspace,
+            executable=str(cli),
+            config_dir=tmp_path / "config",
+            launcher_dir=tmp_path / "launcher",
+        )
+
+    assert str(cli) in _helper_source(wrapper)
+
+
+def _stat_result(mode: int, uid: int) -> os.stat_result:
+    return os.stat_result((mode, 0, 0, 0, uid, 0, 0, 0, 0, 0))
+
+
+def test_check_rebind_metadata_accepts_and_rejects_expected_components() -> None:
+    import stat as stat_module
+
+    from taskchamber.isolation.sandbox import _check_rebind_metadata
+
+    euid = os.geteuid()
+    # Acceptable: euid-owned non-writable file and root-owned system directory.
+    _check_rebind_metadata(_stat_result(stat_module.S_IFREG | 0o700, euid), euid=euid)
+    _check_rebind_metadata(_stat_result(stat_module.S_IFDIR | 0o755, 0), euid=euid)
+
+    with pytest.raises(ValueError, match="changed after canonicalization"):
+        _check_rebind_metadata(_stat_result(stat_module.S_IFLNK | 0o777, euid), euid=euid)
+    with pytest.raises(ValueError, match="owned by another user"):
+        _check_rebind_metadata(_stat_result(stat_module.S_IFREG | 0o700, 1_000_001), euid=euid)
+    with pytest.raises(ValueError, match="writable by group or others"):
+        _check_rebind_metadata(_stat_result(stat_module.S_IFREG | 0o666, euid), euid=euid)
 
 
 def test_rebindable_executable_rejects_a_symlink_component_after_canonicalization(

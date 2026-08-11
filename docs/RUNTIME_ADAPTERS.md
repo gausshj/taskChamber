@@ -111,13 +111,16 @@ absolute `TASKCHAMBER_CLAUDE_CLI_PATH` or use the pinned SDK bundle.
 
 When the canonical CLI resolves below a root the sandbox masks (a host home or
 `/tmp`), the Bubblewrap adapter recreates empty parent directories and
-read-only binds only the exact executable. Because such a root can be publicly
-writable, every path component below the masked root must be owned by the
-effective user or root and must not be group/world-writable, and no component
-may be a symlink after canonicalization; otherwise launcher preparation fails
-closed with `sandbox_setup_failed`. This guards the rebind against replacement
-by other local users between canonicalization and launch; a same-uid process
-is already inside the trust domain and is not the boundary being enforced.
+read-only binds only the exact executable. The masked root itself must be a
+real directory owned by the effective user or root, and a group/world-writable
+root is accepted only with the sticky bit — the shape that makes a root-owned
+`/tmp` safe while a misconfigured non-sticky `0777` home is rejected. Every
+path component below the root must likewise be owned by the effective user or
+root, must not be group/world-writable, and must not be a symlink after
+canonicalization; otherwise launcher preparation fails closed with
+`sandbox_setup_failed`. This guards the rebind against replacement by other
+local users between canonicalization and launch; a same-uid process is already
+inside the trust domain and is not the boundary being enforced.
 
 ## Isolation telemetry
 

@@ -489,9 +489,11 @@ class BubblewrapSandbox(_StagingSandbox):
 
         # Hiding HOME and /tmp can also hide the selected executable. Expose only
         # its canonical file below the most specific masked root. Empty parent
-        # directories reveal no adjacent content. The masked root itself may be
-        # publicly writable (e.g. sticky /tmp), so the rebound path must not be
-        # replaceable by another local user.
+        # directories reveal no adjacent content. The anchor and every component
+        # below it must resist replacement by another local user: a writable
+        # masked root needs the sticky bit (the root-owned /tmp shape), and no
+        # component below it may be foreign-owned, group/world-writable, or a
+        # post-canonicalization symlink.
         masked_roots = tuple(
             sorted(
                 {Path("/tmp"), *masked_homes} - {Path("/")},
@@ -700,32 +702,51 @@ def _observed_cli_argv(executable: str, marker: Path) -> list[str]:
 def _verify_rebindable_executable(executable: Path, masked_root: Path) -> None:
     """Fail closed when a masked-root executable can be swapped by another user.
 
-    ``executable`` is already canonical. Every component below the masked root
-    (the root itself is excluded: a sticky, root-owned ``/tmp`` is acceptable)
-    must be a real filesystem object owned by the effective user or root and
-    must not be group/world-writable. A symlink component after
-    canonicalization means the path changed between resolution and launch.
-    Same-uid replacement remains possible by construction; the boundary
-    enforced here is against other local users.
+    ``executable`` is already canonical. The masked root itself must be a real
+    directory owned by the effective user or root; a group/world-writable root
+    is only acceptable with the sticky bit, which is what makes a root-owned
+    ``/tmp`` a safe anchor while a misconfigured non-sticky ``0777`` home is
+    rejected. Every component below the root must be a real filesystem object
+    owned by the effective user or root and must not be group/world-writable.
+    A symlink component after canonicalization means the path changed between
+    resolution and launch. Same-uid replacement remains possible by
+    construction; the boundary enforced here is against other local users.
     """
+
+    euid = os.geteuid()
+    try:
+        root_metadata = masked_root.lstat()
+    except OSError as exc:
+        raise ValueError("the masked root is unreadable") from exc
+    if stat.S_ISLNK(root_metadata.st_mode):
+        raise ValueError("the masked root changed after canonicalization")
+    if root_metadata.st_uid not in {euid, 0}:
+        raise ValueError("the masked root is owned by another user")
+    if root_metadata.st_mode & 0o022 and not root_metadata.st_mode & stat.S_ISVTX:
+        raise ValueError("the masked root is writable without a sticky bit")
 
     components = [executable]
     parent = executable.parent
     while parent != masked_root:
         components.append(parent)
         parent = parent.parent
-    euid = os.geteuid()
     for component in components:
         try:
             metadata = component.lstat()
         except OSError as exc:
             raise ValueError("the selected CLI is unreadable below a masked root") from exc
-        if stat.S_ISLNK(metadata.st_mode):
-            raise ValueError("the selected CLI path changed after canonicalization")
-        if metadata.st_uid not in {euid, 0}:
-            raise ValueError("the selected CLI is owned by another user below a masked root")
-        if metadata.st_mode & 0o022:
-            raise ValueError("the selected CLI is writable by group or others below a masked root")
+        _check_rebind_metadata(metadata, euid=euid)
+
+
+def _check_rebind_metadata(metadata: os.stat_result, *, euid: int) -> None:
+    """Reject swappable components below a masked root."""
+
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError("the selected CLI path changed after canonicalization")
+    if metadata.st_uid not in {euid, 0}:
+        raise ValueError("the selected CLI is owned by another user below a masked root")
+    if metadata.st_mode & 0o022:
+        raise ValueError("the selected CLI is writable by group or others below a masked root")
 
 
 def _reject_masked_paths(paths: tuple[Path, ...], masked_roots: tuple[Path, ...]) -> None:
