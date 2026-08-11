@@ -28,16 +28,18 @@ jobs:
       - run: uv sync --locked --no-dev
       - name: Verify MCP core without a vendor SDK
         run: >-
-          uv run --no-dev python -c
+          uv run --no-sync --no-dev python -c
           "from taskchamber.application import create_runtime_from_environment;
           assert create_runtime_from_environment(environment={'TASKCHAMBER_RUNTIME':
           'fake'}).name == 'fake'"
       - run: uv sync --locked --all-groups
-      - run: uv run pre-commit run --all-files --show-diff-on-failure
-      - run: uv run ruff check taskchamber tests scripts taskchamber_mcp.py
-      - run: uv run ruff format --check taskchamber tests scripts taskchamber_mcp.py
-      - run: uv run mypy taskchamber
-      - run: uv run python -m compileall -q taskchamber scripts taskchamber_mcp.py
+      # After the explicit locked syncs above, every uv run uses --no-sync so
+      # tool-only commands can neither re-resolve nor rebuild the project.
+      - run: uv run --no-sync pre-commit run --all-files --show-diff-on-failure
+      - run: uv run --no-sync ruff check taskchamber tests scripts taskchamber_mcp.py
+      - run: uv run --no-sync ruff format --check taskchamber tests scripts taskchamber_mcp.py
+      - run: uv run --no-sync mypy taskchamber
+      - run: uv run --no-sync python -m compileall -q taskchamber scripts taskchamber_mcp.py
 
   test:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
@@ -63,8 +65,8 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked --all-groups
-      - run: uv run python -VV
-      - run: uv run pytest -q
+      - run: uv run --no-sync python -VV
+      - run: uv run --no-sync pytest -q
 
   coverage:
     name: Coverage (Ubuntu, Python 3.11)
@@ -133,6 +135,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked --all-groups
-      - run: uv build --no-sources
-      - run: uv run python scripts/check_distribution.py dist
-      - run: uv run python scripts/test_uv_tool_install.py dist/*.whl
+      # Deliberate distribution build inside the CI trust boundary. Isolated
+      # PEP 517 build requirements are pinned and hash-verified through the
+      # repository-tracked build-constraints.txt (regenerate with the command
+      # recorded in that file's header).
+      - run: >-
+          uv build --no-sources
+          --build-constraints build-constraints.txt
+          --require-hashes
+      - run: uv run --no-sync python scripts/check_distribution.py dist
+      # Deliberate installation verification of the just-built wheel.
+      - run: uv run --no-sync python scripts/test_uv_tool_install.py dist/*.whl
