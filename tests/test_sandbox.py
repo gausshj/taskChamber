@@ -253,6 +253,13 @@ def test_bwrap_wrapper_rebinds_only_a_home_installed_cli(
     resolved_cli = home / ".local" / "share" / "claude" / "versions" / "2.1.206"
     resolved_cli.parent.mkdir(parents=True)
     resolved_cli.write_text("binary placeholder", encoding="utf-8")
+    # The rebind check requires deterministic owner-writable-only components;
+    # do not inherit the host umask (e.g. 002 would make these group-writable).
+    directory = resolved_cli.parent
+    while directory != tmp_path:
+        directory.chmod(0o755)
+        directory = directory.parent
+    resolved_cli.chmod(0o644)
     cli_link = home / ".local" / "bin" / "claude"
     cli_link.parent.mkdir(parents=True)
     cli_link.symlink_to(resolved_cli)
@@ -277,6 +284,267 @@ def test_bwrap_wrapper_rebinds_only_a_home_installed_cli(
     assert str(resolved_cli.parent) in helper
     assert str(resolved_cli) in helper
     assert str(cli_link) not in helper
+
+
+def _prepare_masked_root_rebind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mode_dir: int = 0o755,
+    mode_file: int = 0o644,
+) -> tuple[Path, Path, Path]:
+    """Stage a canonical CLI plus a sibling below a fake masked root."""
+
+    masked_root = tmp_path / "masked-tmp"
+    tool_dir = masked_root / "tools"
+    tool_dir.mkdir(parents=True)
+    # Explicit modes: the rebind policy must not depend on the host umask.
+    masked_root.chmod(0o755)
+    tool_dir.chmod(mode_dir)
+    cli = tool_dir / "claude"
+    cli.write_text("binary placeholder", encoding="utf-8")
+    cli.chmod(mode_file)
+    sibling = tool_dir / "sibling-canary"
+    sibling.write_text("must-stay-hidden", encoding="utf-8")
+    sibling.chmod(0o644)
+    monkeypatch.setattr(
+        "taskchamber.isolation.sandbox._host_home_directories",
+        lambda: (masked_root,),
+    )
+    return masked_root, cli, sibling
+
+
+def test_bwrap_wrapper_rebinds_only_the_canonical_executable_below_a_masked_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    masked_root, cli, sibling = _prepare_masked_root_rebind(tmp_path, monkeypatch)
+    cli_link = tmp_path / "bin" / "claude"
+    cli_link.parent.mkdir()
+    cli_link.symlink_to(cli)
+
+    source = tmp_path / "source"
+    source.mkdir()
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    with sandbox.isolate(_policy(source)) as workspace:
+        wrapper = sandbox.prepare_wrapper(
+            workspace,
+            executable=str(cli_link),
+            config_dir=tmp_path / "config",
+            launcher_dir=tmp_path / "launcher",
+        )
+
+    helper = _helper_source(wrapper)
+    assert str(cli) in helper
+    assert str(cli_link) not in helper
+    assert str(sibling) not in helper
+    assert f"--dir', '{masked_root / 'tools'}" in helper
+
+
+@pytest.mark.parametrize(
+    ("mode_dir", "mode_file"),
+    [(0o777, 0o644), (0o755, 0o664), (0o755, 0o666)],
+)
+def test_bwrap_wrapper_rejects_a_writable_rebind_component(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode_dir: int,
+    mode_file: int,
+) -> None:
+    _, cli, _ = _prepare_masked_root_rebind(
+        tmp_path, monkeypatch, mode_dir=mode_dir, mode_file=mode_file
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    with sandbox.isolate(_policy(source)) as workspace:
+        with pytest.raises(ValueError, match="writable by group or others"):
+            sandbox.prepare_wrapper(
+                workspace,
+                executable=str(cli),
+                config_dir=tmp_path / "config",
+                launcher_dir=tmp_path / "launcher",
+            )
+
+
+def test_bwrap_wrapper_rejects_a_rebind_owned_by_another_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, cli, _ = _prepare_masked_root_rebind(tmp_path, monkeypatch)
+    # Simulate foreign ownership without chown: from the process's perspective
+    # the euid no longer matches the masked root owner, so the anchor check
+    # fails before any component is trusted.
+    monkeypatch.setattr("taskchamber.isolation.sandbox.os.geteuid", lambda: 1_000_001)
+    source = tmp_path / "source"
+    source.mkdir()
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    with sandbox.isolate(_policy(source)) as workspace:
+        with pytest.raises(ValueError, match="owned by another user"):
+            sandbox.prepare_wrapper(
+                workspace,
+                executable=str(cli),
+                config_dir=tmp_path / "config",
+                launcher_dir=tmp_path / "launcher",
+            )
+
+
+def test_bwrap_wrapper_rejects_a_non_sticky_world_writable_masked_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A misconfigured home-style root (0o777 without the sticky bit) lets any
+    # local user replace the first component below it after validation, so the
+    # rebind must fail closed even when every component below is clean.
+    masked_root, cli, _ = _prepare_masked_root_rebind(
+        tmp_path, monkeypatch, mode_dir=0o755, mode_file=0o700
+    )
+    masked_root.chmod(0o777)
+    source = tmp_path / "source"
+    source.mkdir()
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    with sandbox.isolate(_policy(source)) as workspace:
+        with pytest.raises(ValueError, match="writable without a sticky bit"):
+            sandbox.prepare_wrapper(
+                workspace,
+                executable=str(cli),
+                config_dir=tmp_path / "config",
+                launcher_dir=tmp_path / "launcher",
+            )
+
+
+def test_bwrap_wrapper_accepts_a_sticky_world_writable_masked_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The sticky bit is what makes a root-owned /tmp a safe anchor: other users
+    # cannot rename or replace entries they do not own.
+    masked_root, cli, _ = _prepare_masked_root_rebind(
+        tmp_path, monkeypatch, mode_dir=0o755, mode_file=0o700
+    )
+    masked_root.chmod(0o1777)
+    source = tmp_path / "source"
+    source.mkdir()
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    with sandbox.isolate(_policy(source)) as workspace:
+        wrapper = sandbox.prepare_wrapper(
+            workspace,
+            executable=str(cli),
+            config_dir=tmp_path / "config",
+            launcher_dir=tmp_path / "launcher",
+        )
+
+    assert str(cli) in _helper_source(wrapper)
+
+
+def _stat_result(mode: int, uid: int) -> os.stat_result:
+    return os.stat_result((mode, 0, 0, 0, uid, 0, 0, 0, 0, 0))
+
+
+def test_check_rebind_metadata_accepts_and_rejects_expected_components() -> None:
+    import stat as stat_module
+
+    from taskchamber.isolation.sandbox import _check_rebind_metadata
+
+    euid = os.geteuid()
+    # Acceptable: euid-owned non-writable file and root-owned system directory.
+    _check_rebind_metadata(_stat_result(stat_module.S_IFREG | 0o700, euid), euid=euid)
+    _check_rebind_metadata(_stat_result(stat_module.S_IFDIR | 0o755, 0), euid=euid)
+
+    symlinked = _stat_result(stat_module.S_IFLNK | 0o777, euid)
+    with pytest.raises(ValueError, match="changed after canonicalization"):
+        _check_rebind_metadata(symlinked, euid=euid)
+    foreign_owned = _stat_result(stat_module.S_IFREG | 0o700, 1_000_001)
+    with pytest.raises(ValueError, match="owned by another user"):
+        _check_rebind_metadata(foreign_owned, euid=euid)
+    world_writable = _stat_result(stat_module.S_IFREG | 0o666, euid)
+    with pytest.raises(ValueError, match="writable by group or others"):
+        _check_rebind_metadata(world_writable, euid=euid)
+
+
+def test_rebindable_executable_rejects_a_symlink_component_after_canonicalization(
+    tmp_path: Path,
+) -> None:
+    # Simulates a swap between resolve() and launch: a component that was a real
+    # directory at canonicalization time is a symlink when the launch is built.
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    masked_root = tmp_path / "masked-tmp"
+    masked_root.mkdir()
+    masked_root.chmod(0o755)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    swapped = outside / "claude"
+    swapped.write_text("binary placeholder", encoding="utf-8")
+    swapped.chmod(0o644)
+    (masked_root / "tools").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="changed after canonicalization"):
+        _verify_rebindable_executable(masked_root / "tools" / "claude", masked_root)
+
+
+def test_rebindable_executable_rejects_a_missing_component(tmp_path: Path) -> None:
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    masked_root = tmp_path / "masked-tmp"
+    masked_root.mkdir()
+    masked_root.chmod(0o755)
+
+    with pytest.raises(ValueError, match="unreadable below a masked root"):
+        _verify_rebindable_executable(masked_root / "gone" / "claude", masked_root)
+
+
+def test_rebindable_executable_rejects_an_unreadable_masked_root(tmp_path: Path) -> None:
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    missing_root = tmp_path / "gone"
+
+    with pytest.raises(ValueError, match="the masked root is unreadable"):
+        _verify_rebindable_executable(missing_root / "tools" / "claude", missing_root)
+
+
+def test_rebindable_executable_rejects_a_symlink_masked_root(tmp_path: Path) -> None:
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target)
+
+    with pytest.raises(ValueError, match="the masked root changed after canonicalization"):
+        _verify_rebindable_executable(link / "tools" / "claude", link)
+
+
+def test_rebindable_executable_rejects_a_regular_file_masked_root(tmp_path: Path) -> None:
+    # A home-style masked root misconfigured as the executable file itself must
+    # fail closed immediately instead of walking parents forever.
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    not_a_directory = tmp_path / "claude"
+    not_a_directory.write_text("binary placeholder", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="the masked root is not a directory"):
+        _verify_rebindable_executable(not_a_directory, not_a_directory)
+
+
+def test_rebindable_executable_bounds_the_walk_to_the_masked_root(tmp_path: Path) -> None:
+    from taskchamber.isolation.sandbox import _verify_rebindable_executable
+
+    masked_root = tmp_path / "masked-tmp"
+    masked_root.mkdir()
+    masked_root.chmod(0o755)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cli = outside / "claude"
+    cli.write_text("binary placeholder", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not below the masked root"):
+        _verify_rebindable_executable(cli, masked_root)
 
 
 def test_native_tool_basenames_are_canonicalized_before_launch(
@@ -315,7 +583,9 @@ def test_native_tool_basenames_are_canonicalized_before_launch(
 def test_bwrap_wrapper_rebinds_an_executable_hidden_by_tmpfs(tmp_path: Path) -> None:
     cli = tmp_path / "bin" / "claude"
     cli.parent.mkdir()
+    cli.parent.chmod(0o755)
     cli.write_text("binary placeholder", encoding="utf-8")
+    cli.chmod(0o755)
     config_dir = tmp_path / "config"
     launcher_dir = tmp_path / "launcher"
     workspace = IsolatedWorkspace(root=tmp_path / "workspace", allowed_paths=())
@@ -981,6 +1251,76 @@ def test_bwrap_mounts_a_private_tmpfs_over_host_tmp(tmp_path: Path) -> None:
             text=True,
             timeout=20,
         )
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux")
+    or os.environ.get("TASKCHAMBER_RUN_NATIVE_SANDBOX_TESTS") != "1",
+    reason="requires an explicitly enabled native Linux bubblewrap probe",
+)
+def test_bwrap_rebinds_only_the_executable_below_masked_tmp(tmp_path: Path) -> None:
+    # SonarCloud python:S5443 flags the executable rebind below the masked /tmp
+    # root. This explicitly enabled native probe is the authoritative evidence
+    # that only the exact canonical executable crosses the boundary.
+    sandbox = BubblewrapSandbox()
+    assert sandbox.preflight()
+
+    with TemporaryDirectory(prefix="taskchamber-rebind-", dir="/tmp") as host_tool_directory:
+        tool_dir = Path(host_tool_directory)
+        tool_dir.chmod(0o700)
+        tool = tool_dir / "probe-cli"
+        sibling = tool_dir / "sibling-canary"
+        sibling.write_text("must-stay-hidden", encoding="utf-8")
+        sibling.chmod(0o600)
+
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir()
+        workspace = IsolatedWorkspace(root=workspace_root, allowed_paths=(workspace_root,))
+
+        tool.write_text(
+            "#!/bin/sh\n"
+            # The sibling below the same host directory must stay hidden.
+            'if [ -e "$1" ]; then exit 40; fi\n'
+            # The exact executable itself is rebound and runnable.
+            'if [ ! -x "$2" ]; then exit 41; fi\n'
+            # Empty recreated parents expose no other adjacent host content.
+            'if [ "$(/bin/ls -A "$3" | /usr/bin/wc -l)" -ne 1 ]; then exit 42; fi\n',
+            encoding="utf-8",
+        )
+        tool.chmod(0o700)
+        subprocess.run(
+            [
+                str(
+                    sandbox.prepare_wrapper(
+                        workspace,
+                        executable=str(tool),
+                        config_dir=tmp_path / "config",
+                        launcher_dir=tmp_path / "launcher",
+                    )
+                ),
+                str(sibling),
+                str(tool),
+                str(tool_dir),
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=20,
+        )
+
+        # A group/world-writable ancestor below the masked root fails closed
+        # before any sandbox launch.
+        tool_dir.chmod(0o777)
+        try:
+            with pytest.raises(ValueError, match="writable by group or others"):
+                sandbox.prepare_wrapper(
+                    workspace,
+                    executable=str(tool),
+                    config_dir=tmp_path / "config-denied",
+                    launcher_dir=tmp_path / "launcher-denied",
+                )
+        finally:
+            tool_dir.chmod(0o700)
 
 
 @pytest.mark.anyio
