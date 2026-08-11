@@ -110,8 +110,7 @@ class ServerSettings:
             raise ValueError(f"workspace root is not a directory: {root}")
         if self.max_concurrency < 1:
             raise ValueError("max_concurrency must be at least one")
-        if self.max_output_chars < 1:
-            raise ValueError("max_output_chars must be at least one")
+        _require_positive_int(self.max_output_chars, field="max_output_chars")
         effective = _require_positive_int(
             self.max_single_pass_document_bytes, field="max_single_pass_document_bytes"
         )
@@ -652,6 +651,7 @@ class TaskService:
             allowed_paths=allowed_paths,
             system_prompt=self._system_prompt(
                 preset.system_prompt,
+                output_limit=output_limit,
                 has_workspace=bool(allowed_paths),
                 has_documents=document_catalog is not None or single_pass,
             ),
@@ -972,10 +972,15 @@ class TaskService:
     def _system_prompt(
         base: str,
         *,
+        output_limit: int,
         has_workspace: bool,
         has_documents: bool,
     ) -> str:
-        additions: list[str] = []
+        additions: list[str] = [
+            f"Return a complete response within at most {output_limit} characters. "
+            "Prioritize the requested answer over exhaustive detail and finish any "
+            "list or structure cleanly."
+        ]
         if has_documents:
             additions.append(
                 "External documents are virtual and read-only. Use only document content "
