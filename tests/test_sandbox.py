@@ -253,6 +253,13 @@ def test_bwrap_wrapper_rebinds_only_a_home_installed_cli(
     resolved_cli = home / ".local" / "share" / "claude" / "versions" / "2.1.206"
     resolved_cli.parent.mkdir(parents=True)
     resolved_cli.write_text("binary placeholder", encoding="utf-8")
+    # The rebind check requires deterministic owner-writable-only components;
+    # do not inherit the host umask (e.g. 002 would make these group-writable).
+    directory = resolved_cli.parent
+    while directory != tmp_path:
+        directory.chmod(0o755)
+        directory = directory.parent
+    resolved_cli.chmod(0o644)
     cli_link = home / ".local" / "bin" / "claude"
     cli_link.parent.mkdir(parents=True)
     cli_link.symlink_to(resolved_cli)
@@ -291,6 +298,8 @@ def _prepare_masked_root_rebind(
     masked_root = tmp_path / "masked-tmp"
     tool_dir = masked_root / "tools"
     tool_dir.mkdir(parents=True)
+    # Explicit modes: the rebind policy must not depend on the host umask.
+    masked_root.chmod(0o755)
     tool_dir.chmod(mode_dir)
     cli = tool_dir / "claude"
     cli.write_text("binary placeholder", encoding="utf-8")
@@ -467,9 +476,12 @@ def test_rebindable_executable_rejects_a_symlink_component_after_canonicalizatio
 
     masked_root = tmp_path / "masked-tmp"
     masked_root.mkdir()
+    masked_root.chmod(0o755)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "claude").write_text("binary placeholder", encoding="utf-8")
+    swapped = outside / "claude"
+    swapped.write_text("binary placeholder", encoding="utf-8")
+    swapped.chmod(0o644)
     (masked_root / "tools").symlink_to(outside)
 
     with pytest.raises(ValueError, match="changed after canonicalization"):
@@ -481,6 +493,7 @@ def test_rebindable_executable_rejects_a_missing_component(tmp_path: Path) -> No
 
     masked_root = tmp_path / "masked-tmp"
     masked_root.mkdir()
+    masked_root.chmod(0o755)
 
     with pytest.raises(ValueError, match="unreadable below a masked root"):
         _verify_rebindable_executable(masked_root / "gone" / "claude", masked_root)
@@ -524,6 +537,7 @@ def test_rebindable_executable_bounds_the_walk_to_the_masked_root(tmp_path: Path
 
     masked_root = tmp_path / "masked-tmp"
     masked_root.mkdir()
+    masked_root.chmod(0o755)
     outside = tmp_path / "outside"
     outside.mkdir()
     cli = outside / "claude"
@@ -569,7 +583,9 @@ def test_native_tool_basenames_are_canonicalized_before_launch(
 def test_bwrap_wrapper_rebinds_an_executable_hidden_by_tmpfs(tmp_path: Path) -> None:
     cli = tmp_path / "bin" / "claude"
     cli.parent.mkdir()
+    cli.parent.chmod(0o755)
     cli.write_text("binary placeholder", encoding="utf-8")
+    cli.chmod(0o755)
     config_dir = tmp_path / "config"
     launcher_dir = tmp_path / "launcher"
     workspace = IsolatedWorkspace(root=tmp_path / "workspace", allowed_paths=())
