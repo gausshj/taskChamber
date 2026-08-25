@@ -1,1 +1,5 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability report
+    url: https://github.com/gausshj/taskChamber/security/advisories/new
+    about: Report a suspected vulnerability privately through GitHub. Never disclose security issues in a public issue.
