@@ -6,13 +6,15 @@ command execution are treated with the highest priority.
 
 ## Supported versions
 
-Security fixes are applied to the latest published release and to `main`.
-Older release lines do not receive backports; upgrade to the current release
-before reporting problems that may already be fixed.
+Before the first release is published, only `main` receives security fixes.
+After releases begin, security fixes are applied to `main` and to the latest
+published release. Older release lines do not receive backports; upgrade to
+the current release before reporting problems that may already be fixed.
 
 | Version | Supported |
 | ------- | --------- |
-| Latest release | Yes |
+| `main` | Yes |
+| Latest release | Yes, when available |
 | Older releases | No |
 
 ## Reporting a vulnerability
@@ -21,8 +23,9 @@ Use GitHub Private Vulnerability Reporting:
 
 <https://github.com/gausshj/taskChamber/security/advisories/new>
 
-This creates a private advisory visible only to the maintainers. Do not open a
-public issue, pull request, or discussion for a suspected vulnerability.
+This creates a non-public advisory shared with repository maintainers and
+advisory collaborators, including the reporter. Do not open a public issue,
+pull request, or discussion for a suspected vulnerability.
 
 ### What to include
 
