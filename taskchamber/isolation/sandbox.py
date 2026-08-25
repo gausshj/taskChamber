@@ -76,6 +76,32 @@ def _host_home_directories() -> tuple[Path, ...]:
     return tuple(sorted(homes - {Path("/")}, key=lambda path: len(path.parts), reverse=True))
 
 
+def _masked_root_for(executable: Path) -> Path | None:
+    """Return the most specific sandbox-masked root hiding ``executable``."""
+
+    masked_roots = tuple(
+        sorted(
+            {Path("/tmp"), *_host_home_directories()} - {Path("/")},
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+    )
+    return next(
+        (root for root in masked_roots if executable.is_relative_to(root)),
+        None,
+    )
+
+
+class InsecureCliPathError(ValueError):
+    """The resolved agent CLI can be replaced by another local user.
+
+    Raised when an executable below a sandbox-masked root is foreign-owned,
+    group/world-writable, or changes identity after canonicalization. It is a
+    ``ValueError`` subclass so existing fail-closed callers keep working, but
+    runtimes may map it to a specific, actionable error.
+    """
+
+
 @dataclass(frozen=True)
 class IsolatedWorkspace:
     """The directory tree an agent runtime may touch for one task."""
@@ -113,6 +139,17 @@ class Sandbox:
         """Reject forwarded path settings hidden by this boundary."""
 
         _reject_masked_paths(paths, ())
+
+    def validate_cli_executable(self, executable: Path) -> None:
+        """Reject a resolved CLI this boundary cannot expose safely.
+
+        The default staging behavior never hides the executable, so there is
+        nothing to check. OS-isolating subclasses override this to fail closed
+        before provider work begins, raising :class:`InsecureCliPathError` with
+        an actionable cause.
+        """
+
+        return
 
     @contextmanager
     def isolate(self, policy: ExecutionPolicy) -> Iterator[IsolatedWorkspace]:
@@ -454,6 +491,21 @@ class BubblewrapSandbox(_StagingSandbox):
     def validate_readable_paths(self, paths: tuple[Path, ...]) -> None:
         _reject_masked_paths(paths, (Path("/tmp"), *_host_home_directories()))
 
+    def validate_cli_executable(self, executable: Path) -> None:
+        """Fail closed when the resolved CLI is replaceable below a masked root.
+
+        Hiding ``$HOME`` and ``/tmp`` hides an executable installed below them,
+        so the launcher rebinds the canonical file into the namespace. That
+        rebind is only safe when no other local user can swap the file or one
+        of its parents; a group-writable install (for example from a host
+        ``umask 002``) is rejected here, before any provider work begins.
+        """
+
+        resolved = executable.expanduser().resolve()
+        masked_root = _masked_root_for(resolved)
+        if masked_root is not None:
+            _verify_rebindable_executable(resolved, masked_root)
+
     def _sandbox_argv(
         self,
         workspace: IsolatedWorkspace,
@@ -494,17 +546,7 @@ class BubblewrapSandbox(_StagingSandbox):
         # masked root needs the sticky bit (the root-owned /tmp shape), and no
         # component below it may be foreign-owned, group/world-writable, or a
         # post-canonicalization symlink.
-        masked_roots = tuple(
-            sorted(
-                {Path("/tmp"), *masked_homes} - {Path("/")},
-                key=lambda path: len(path.parts),
-                reverse=True,
-            )
-        )
-        masked_root = next(
-            (root for root in masked_roots if resolved_executable.is_relative_to(root)),
-            None,
-        )
+        masked_root = _masked_root_for(resolved_executable)
         if masked_root is not None:
             _verify_rebindable_executable(resolved_executable, masked_root)
             directory = masked_root
@@ -717,15 +759,15 @@ def _verify_rebindable_executable(executable: Path, masked_root: Path) -> None:
     try:
         root_metadata = masked_root.lstat()
     except OSError as exc:
-        raise ValueError("the masked root is unreadable") from exc
+        raise InsecureCliPathError("the masked root is unreadable") from exc
     if stat.S_ISLNK(root_metadata.st_mode):
-        raise ValueError("the masked root changed after canonicalization")
+        raise InsecureCliPathError("the masked root changed after canonicalization")
     if not stat.S_ISDIR(root_metadata.st_mode):
-        raise ValueError("the masked root is not a directory")
+        raise InsecureCliPathError("the masked root is not a directory")
     if root_metadata.st_uid not in {euid, 0}:
-        raise ValueError("the masked root is owned by another user")
+        raise InsecureCliPathError("the masked root is owned by another user")
     if root_metadata.st_mode & 0o022 and not root_metadata.st_mode & stat.S_ISVTX:
-        raise ValueError("the masked root is writable without a sticky bit")
+        raise InsecureCliPathError("the masked root is writable without a sticky bit")
 
     components = [executable]
     parent = executable.parent
@@ -733,14 +775,16 @@ def _verify_rebindable_executable(executable: Path, masked_root: Path) -> None:
         if not parent.is_relative_to(masked_root):
             # The caller guarantees this containment; the check keeps the walk
             # bounded even if that guarantee is ever broken.
-            raise ValueError("the selected CLI is not below the masked root")
+            raise InsecureCliPathError("the selected CLI is not below the masked root")
         components.append(parent)
         parent = parent.parent
     for component in components:
         try:
             metadata = component.lstat()
         except OSError as exc:
-            raise ValueError("the selected CLI is unreadable below a masked root") from exc
+            raise InsecureCliPathError(
+                "the selected CLI is unreadable below a masked root"
+            ) from exc
         _check_rebind_metadata(metadata, euid=euid)
 
 
@@ -748,11 +792,13 @@ def _check_rebind_metadata(metadata: os.stat_result, *, euid: int) -> None:
     """Reject swappable components below a masked root."""
 
     if stat.S_ISLNK(metadata.st_mode):
-        raise ValueError("the selected CLI path changed after canonicalization")
+        raise InsecureCliPathError("the selected CLI path changed after canonicalization")
     if metadata.st_uid not in {euid, 0}:
-        raise ValueError("the selected CLI is owned by another user below a masked root")
+        raise InsecureCliPathError("the selected CLI is owned by another user below a masked root")
     if metadata.st_mode & 0o022:
-        raise ValueError("the selected CLI is writable by group or others below a masked root")
+        raise InsecureCliPathError(
+            "the selected CLI is writable by group or others below a masked root"
+        )
 
 
 def _reject_masked_paths(paths: tuple[Path, ...], masked_roots: tuple[Path, ...]) -> None:

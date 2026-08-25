@@ -16,6 +16,7 @@ from taskchamber.core.contracts import (
 )
 from taskchamber.isolation import (
     BubblewrapSandbox,
+    InsecureCliPathError,
     IsolatedWorkspace,
     MacOSSandboxExecSandbox,
     NoSandbox,
@@ -367,6 +368,29 @@ def test_bwrap_wrapper_rejects_a_writable_rebind_component(
                 config_dir=tmp_path / "config",
                 launcher_dir=tmp_path / "launcher",
             )
+
+
+def test_bwrap_validate_cli_executable_rejects_a_group_writable_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The umask 002 shape from a uv-managed install: an owner-only check must
+    # reject the group-writable parent directory before provider work begins.
+    _, cli, _ = _prepare_masked_root_rebind(tmp_path, monkeypatch, mode_dir=0o775, mode_file=0o664)
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    with pytest.raises(InsecureCliPathError, match="writable by group or others"):
+        sandbox.validate_cli_executable(cli)
+
+
+def test_bwrap_validate_cli_executable_accepts_an_owner_only_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, cli, _ = _prepare_masked_root_rebind(tmp_path, monkeypatch, mode_dir=0o755, mode_file=0o644)
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    sandbox.validate_cli_executable(cli)
 
 
 def test_bwrap_wrapper_rejects_a_rebind_owned_by_another_user(

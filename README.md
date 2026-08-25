@@ -299,6 +299,20 @@ below a hidden home or `/tmp`, not adjacent npm/Homebrew modules or
 interpreters. A missing, non-executable, or incompatible override fails instead
 of falling back to ambient PATH; prefer the pinned bundle.
 
+Because Bubblewrap hides host home directories, an executable installed below
+one is rebound as one exact read-only file — and that rebind is only permitted
+when no other local user can replace it. Installers running under a host
+`umask 002` may leave the bundled CLI or its parent directories group-writable
+(for example `0775` below `~/.local/share/uv/tools`). The runtime detects this
+before any provider work begins and fails the task with
+`sandbox_cli_path_insecure` instead of a generic sandbox error; the resolved
+path is written to local stderr, never to MCP telemetry. The supported
+remediation is to keep native isolation on and point
+`TASKCHAMBER_CLAUDE_CLI_PATH` at an owner-only executable, for example a copy
+of the bundled CLI inside a `chmod 700` directory. TaskChamber never widens
+the check, never chmods the user home, and never falls back to an unsandboxed
+runtime on its own.
+
 Virtual document sources are separate from this snapshot. Directory documents
 are read in place by the MCP server through bounded catalog operations; CLI
 stdout is held as bounded task-local data. Neither is materialized in the
