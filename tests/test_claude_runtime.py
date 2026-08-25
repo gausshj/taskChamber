@@ -65,6 +65,24 @@ def test_claude_options_enforce_read_only_boundary(tmp_path: Path) -> None:
     assert options.env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "config")
 
 
+def test_claude_options_disable_budget_unless_the_host_opts_in(tmp_path: Path) -> None:
+    runtime = ClaudeAgentSdkRuntime(environment={"Z_AI_API_KEY": "test-token"})
+
+    opted_out = runtime.build_options(
+        _request(),
+        dataclasses.replace(_policy(tmp_path), max_budget_usd=None),
+        config_dir=tmp_path / "config",
+    )
+    assert opted_out.max_budget_usd is None
+
+    opted_in = runtime.build_options(
+        _request(),
+        dataclasses.replace(_policy(tmp_path), max_budget_usd=0.25),
+        config_dir=tmp_path / "config",
+    )
+    assert opted_in.max_budget_usd == 0.25
+
+
 def test_dynamic_provider_only_forwards_the_selected_credential(tmp_path: Path) -> None:
     reference = "TASKCHAMBER_PROFILE__CUSTOM__API_KEY"
     profile = ProviderProfile(

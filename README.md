@@ -119,6 +119,11 @@ clients that do not expose structured results. `cost_usd` remains available for
 compatibility, but it is only provider-reported reference metadata: pricing,
 subscriptions, pricing arrangements, and gateways are not comparable.
 
+Monetary budget enforcement is disabled by default, so provider-reported cost
+never aborts a task. A host may opt in to the Claude Agent SDK hard-stop by
+setting `TASKCHAMBER_MAX_BUDGET_USD` to a positive number; turn, timeout,
+output-size, document-size, and concurrency limits always remain in force.
+
 ## Local setup
 
 ```bash

@@ -474,6 +474,82 @@ def test_server_settings_allows_effective_equal_to_absolute(tmp_path: Path) -> N
     assert settings.absolute_max_single_pass_document_bytes == 1_048_576
 
 
+def test_server_settings_budget_disabled_by_default(tmp_path: Path) -> None:
+    settings = ServerSettings.from_mapping({"TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path)})
+    assert settings.max_budget_usd is None
+    blank = ServerSettings.from_mapping(
+        {
+            "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+            "TASKCHAMBER_MAX_BUDGET_USD": "  ",
+        }
+    )
+    assert blank.max_budget_usd is None
+
+
+def test_server_settings_loads_budget_opt_in_from_mapping(tmp_path: Path) -> None:
+    settings = ServerSettings.from_mapping(
+        {
+            "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+            "TASKCHAMBER_MAX_BUDGET_USD": "0.25",
+        }
+    )
+    assert settings.max_budget_usd == 0.25
+
+
+@pytest.mark.parametrize("raw", ["not-a-number", "0", "-1", "nan", "inf"])
+def test_server_settings_rejects_invalid_budget_configuration(tmp_path: Path, raw: str) -> None:
+    with pytest.raises(ValueError, match="TASKCHAMBER_MAX_BUDGET_USD must be a positive number"):
+        ServerSettings.from_mapping(
+            {
+                "TASKCHAMBER_WORKSPACE_ROOT": str(tmp_path),
+                "TASKCHAMBER_MAX_BUDGET_USD": raw,
+            }
+        )
+
+
+@pytest.mark.parametrize("value", [True, 0, -0.5, float("nan")])
+def test_server_settings_rejects_invalid_direct_budget(tmp_path: Path, value: object) -> None:
+    # Direct construction must fail closed: a bool, non-finite, or non-positive
+    # budget would leak into the SDK hard-stop boundary.
+    with pytest.raises(ValueError, match="max_budget_usd must be a positive number"):
+        ServerSettings(workspace_root=tmp_path, max_budget_usd=value)  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_service_passes_no_budget_to_runtime_by_default(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    service = TaskService(runtime, ServerSettings(workspace_root=tmp_path))
+
+    result = await service.research(
+        question="Inspect.",
+        scope=None,
+        provider="fake-profile",
+        max_turns=None,
+    )
+
+    assert result.status is TaskStatus.SUCCESS
+    assert runtime.policies[0].max_budget_usd is None
+
+
+@pytest.mark.anyio
+async def test_service_passes_opted_in_budget_to_runtime(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    service = TaskService(
+        runtime,
+        ServerSettings(workspace_root=tmp_path, max_budget_usd=0.25),
+    )
+
+    result = await service.research(
+        question="Inspect.",
+        scope=None,
+        provider="fake-profile",
+        max_turns=None,
+    )
+
+    assert result.status is TaskStatus.SUCCESS
+    assert runtime.policies[0].max_budget_usd == 0.25
+
+
 @pytest.mark.anyio
 async def test_single_pass_accepts_a_document_above_the_default_when_configured(
     tmp_path: Path,
