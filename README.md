@@ -426,6 +426,12 @@ tool allow/deny policy, secret canaries, and write attempts, follow
 Release maintainers should follow
 [`docs/RELEASING.md`](https://github.com/gausshj/taskChamber/blob/main/docs/RELEASING.md).
 
+## Security
+
+To report a suspected vulnerability, follow the private reporting process in
+[`SECURITY.md`](https://github.com/gausshj/taskChamber/blob/main/SECURITY.md).
+Never disclose security issues in a public issue.
+
 ## License
 
 TaskChamber is licensed under the
