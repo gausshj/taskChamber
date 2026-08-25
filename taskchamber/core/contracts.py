@@ -181,7 +181,8 @@ class ExecutionPolicy:
     allowed_tools: tuple[str, ...]
     disallowed_tools: tuple[str, ...]
     max_turns: int
-    max_budget_usd: float
+    # None disables monetary enforcement for the runtime adapter.
+    max_budget_usd: float | None
     timeout_seconds: float
     max_output_chars: int
     max_file_bytes: int

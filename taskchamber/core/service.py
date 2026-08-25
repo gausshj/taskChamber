@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -82,6 +83,7 @@ PRESETS: dict[TaskKind, TaskPreset] = {
     ),
 }
 
+MAX_BUDGET_USD_VARIABLE = "TASKCHAMBER_MAX_BUDGET_USD"
 MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE = "TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES"
 ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE = (
     "TASKCHAMBER_ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES"
@@ -96,7 +98,8 @@ class ServerSettings:
 
     workspace_root: Path
     default_profile: str = "default"
-    max_budget_usd: float = 0.5
+    # Monetary enforcement is opt-in: None disables the SDK budget hard-stop.
+    max_budget_usd: float | None = None
     timeout_seconds: float = 120.0
     max_output_chars: int = 12_000
     max_file_bytes: int = 1_000_000
@@ -110,6 +113,8 @@ class ServerSettings:
             raise ValueError(f"workspace root is not a directory: {root}")
         if self.max_concurrency < 1:
             raise ValueError("max_concurrency must be at least one")
+        if self.max_budget_usd is not None:
+            _require_positive_budget(self.max_budget_usd, field="max_budget_usd")
         _require_positive_int(self.max_output_chars, field="max_output_chars")
         effective = _require_positive_int(
             self.max_single_pass_document_bytes, field="max_single_pass_document_bytes"
@@ -146,6 +151,10 @@ class ServerSettings:
             default_profile=(
                 values.get("TASKCHAMBER_DEFAULT_PROFILE", default_profile) or default_profile
             ),
+            max_budget_usd=_optional_budget_setting(
+                values.get(MAX_BUDGET_USD_VARIABLE),
+                field=MAX_BUDGET_USD_VARIABLE,
+            ),
             max_single_pass_document_bytes=_positive_int_setting(
                 values.get(MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE),
                 default=DEFAULT_MAX_SINGLE_PASS_DOCUMENT_BYTES,
@@ -157,6 +166,34 @@ class ServerSettings:
                 field=ABSOLUTE_MAX_SINGLE_PASS_DOCUMENT_BYTES_VARIABLE,
             ),
         )
+
+
+def _optional_budget_setting(raw: str | None, *, field: str) -> float | None:
+    """Parse an opt-in monetary budget, preserving ``None`` when unset."""
+
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be a positive number") from exc
+    return _require_positive_budget(value, field=field)
+
+
+def _require_positive_budget(value: object, *, field: str) -> float:
+    """Reject non-numeric, non-finite, or non-positive budgets before use.
+
+    Monetary enforcement is disabled by default, so a configured budget must
+    fail closed: a ``True``, ``nan``, or negative value cannot slip through and
+    surface as an unexpected SDK hard-stop during a later request.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a positive number")
+    budget = float(value)
+    if not math.isfinite(budget) or budget <= 0:
+        raise ValueError(f"{field} must be a positive number")
+    return budget
 
 
 def _positive_int_setting(raw: str | None, *, default: int, field: str) -> int:

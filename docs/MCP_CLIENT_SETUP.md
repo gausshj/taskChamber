@@ -100,6 +100,12 @@ post-call telemetry, not a hard pre-call token budget. `usage` is the aggregate
 counter set; `model_usage` breaks the same provider-reported counters down per
 model. TaskChamber does not emit a per-call provider invocation trace.
 
+`cost_usd` is provider-reported reference metadata, not an authoritative
+charge: pricing, subscriptions, gateways, and pricing arrangements are not
+comparable across providers. Monetary budget enforcement is disabled by
+default and cost never decides task success; a host may explicitly opt in to
+the SDK hard-stop with `TASKCHAMBER_MAX_BUDGET_USD`.
+
 ## Response envelope text mode
 
 Every tool response carries two representations of the same `TaskResult`: the
