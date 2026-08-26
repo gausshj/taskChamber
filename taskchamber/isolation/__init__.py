@@ -3,6 +3,7 @@
 from .sandbox import (
     CLI_LAUNCH_OBSERVATION_FILE,
     BubblewrapSandbox,
+    InsecureCliPathError,
     IsolatedWorkspace,
     MacOSSandboxExecSandbox,
     NoSandbox,
@@ -13,6 +14,7 @@ from .sandbox import (
 __all__ = [
     "CLI_LAUNCH_OBSERVATION_FILE",
     "BubblewrapSandbox",
+    "InsecureCliPathError",
     "IsolatedWorkspace",
     "MacOSSandboxExecSandbox",
     "NoSandbox",

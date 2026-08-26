@@ -17,6 +17,7 @@ from taskchamber.core.contracts import (
     ToolCallDecision,
 )
 from taskchamber.core.documents import DocumentCatalog
+from taskchamber.isolation import InsecureCliPathError, NoSandbox
 from taskchamber.runtimes.claude import ClaudeAgentSdkRuntime
 from taskchamber.runtimes.claude.documents import CLAUDE_DOCUMENT_TOOL_NAMES
 
@@ -81,6 +82,90 @@ def test_claude_options_disable_budget_unless_the_host_opts_in(tmp_path: Path) -
         config_dir=tmp_path / "config",
     )
     assert opted_in.max_budget_usd == 0.25
+
+
+def _standalone_cli(tmp_path: Path) -> Path:
+    cli = tmp_path / "bin" / "claude"
+    cli.parent.mkdir(exist_ok=True)
+    cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    cli.chmod(0o755)
+    return cli
+
+
+class _InsecureValidatingSandbox(NoSandbox):
+    def validate_cli_executable(self, executable: Path) -> None:
+        raise InsecureCliPathError(
+            "the selected CLI is writable by group or others below a masked root"
+        )
+
+
+class _InsecureLauncherSandbox(NoSandbox):
+    def prepare_cli_launcher(
+        self,
+        workspace: object,
+        *,
+        executable: str,
+        config_dir: Path,
+        launcher_dir: Path,
+        environment_keys: tuple[str, ...] = (),
+    ) -> Path:
+        raise InsecureCliPathError(
+            "the selected CLI is writable by group or others below a masked root"
+        )
+
+
+@pytest.mark.anyio
+async def test_run_reports_an_insecure_cli_path_before_provider_work(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    called = False
+
+    async def fake_query(**kwargs: object) -> object:
+        nonlocal called
+        called = True
+        yield
+
+    runtime = ClaudeAgentSdkRuntime(
+        environment={"Z_AI_API_KEY": "test-token"},
+        query_function=fake_query,
+        sandbox=_InsecureValidatingSandbox(),
+        bundled_cli_resolver=lambda: _standalone_cli(tmp_path),
+    )
+
+    result = await runtime.run(_request(), _policy(tmp_path))
+
+    assert result.status is TaskStatus.FAILED
+    assert result.error_code == "sandbox_cli_path_insecure"
+    assert "TASKCHAMBER_CLAUDE_CLI_PATH" in (result.error_message or "")
+    assert called is False
+    # The host path stays in local operator diagnostics, not the MCP result.
+    assert str(tmp_path / "bin" / "claude") in capsys.readouterr().err
+
+
+@pytest.mark.anyio
+async def test_run_maps_a_launcher_rebind_rejection_to_the_specific_error(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    async def fake_query(**kwargs: object) -> object:
+        nonlocal called
+        called = True
+        yield
+
+    runtime = ClaudeAgentSdkRuntime(
+        environment={"Z_AI_API_KEY": "test-token"},
+        query_function=fake_query,
+        sandbox=_InsecureLauncherSandbox(),
+        bundled_cli_resolver=lambda: _standalone_cli(tmp_path),
+    )
+
+    result = await runtime.run(_request(), _policy(tmp_path))
+
+    assert result.status is TaskStatus.FAILED
+    assert result.error_code == "sandbox_cli_path_insecure"
+    assert called is False
 
 
 def test_dynamic_provider_only_forwards_the_selected_credential(tmp_path: Path) -> None:

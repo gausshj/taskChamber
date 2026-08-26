@@ -117,10 +117,14 @@ root is accepted only with the sticky bit — the shape that makes a root-owned
 `/tmp` safe while a misconfigured non-sticky `0777` home is rejected. Every
 path component below the root must likewise be owned by the effective user or
 root, must not be group/world-writable, and must not be a symlink after
-canonicalization; otherwise launcher preparation fails closed with
-`sandbox_setup_failed`. This guards the rebind against replacement by other
-local users between canonicalization and launch; a same-uid process is already
-inside the trust domain and is not the boundary being enforced.
+canonicalization. The Claude runtime validates the resolved CLI against this
+policy before any provider work begins and reports a violation as
+`sandbox_cli_path_insecure` with an actionable remediation; the launcher
+repeats the same check when building its argv and fails closed with
+`sandbox_setup_failed` for any other boundary-construction error. This guards
+the rebind against replacement by other local users between canonicalization
+and launch; a same-uid process is already inside the trust domain and is not
+the boundary being enforced.
 
 ## Isolation telemetry
 

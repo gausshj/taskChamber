@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
+import sys
 import time
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -42,6 +43,7 @@ from ...core.contracts import (
 from ...core.policy import PolicyDeniedError, WorkspaceGuard
 from ...isolation import (
     CLI_LAUNCH_OBSERVATION_FILE,
+    InsecureCliPathError,
     IsolatedWorkspace,
     NoSandbox,
     Sandbox,
@@ -100,6 +102,12 @@ _CLI_FILE_PATH_ENVIRONMENT_KEYS = (
     "SSL_CERT_FILE",
 )
 _CLI_DIRECTORY_PATH_ENVIRONMENT_KEYS = ("SSL_CERT_DIR",)
+
+_INSECURE_CLI_PATH_MESSAGE = (
+    "The resolved Claude CLI can be replaced by another local user below a "
+    "sandbox-masked directory; configure TASKCHAMBER_CLAUDE_CLI_PATH to an "
+    "owner-only executable."
+)
 
 
 @dataclass(frozen=True)
@@ -371,6 +379,27 @@ class ClaudeAgentSdkRuntime:
             )
 
         try:
+            self._sandbox.validate_cli_executable(executable.path)
+        except InsecureCliPathError as exc:
+            # Operator-facing diagnostics keep the host path on local stderr;
+            # the MCP-visible error carries only the actionable remediation.
+            print(
+                f"taskchamber: insecure Claude CLI path {executable.path}: {exc}",
+                file=sys.stderr,
+            )
+            return self._failure(
+                request,
+                status=TaskStatus.FAILED,
+                error_code="sandbox_cli_path_insecure",
+                message=_INSECURE_CLI_PATH_MESSAGE,
+                model=self._model_for(profile),
+                execution=self._unavailable_execution_telemetry(
+                    policy,
+                    sandbox_preflight_passed=sandbox_preflight_passed,
+                ),
+            )
+
+        try:
             self._sandbox.validate_readable_paths(self._forwarded_environment_paths())
         except ValueError:
             return self._failure(
@@ -404,6 +433,25 @@ class ClaudeAgentSdkRuntime:
                         config_dir=config_dir,
                         launcher_dir=launcher_dir,
                         executable=executable,
+                    )
+                except InsecureCliPathError:
+                    # Defense in depth: run() validates the CLI before staging,
+                    # but keep the launcher boundary honest for other adapters.
+                    return self._failure(
+                        request,
+                        status=TaskStatus.FAILED,
+                        error_code="sandbox_cli_path_insecure",
+                        message=_INSECURE_CLI_PATH_MESSAGE,
+                        model=self._model_for(profile),
+                        duration_ms=self._elapsed_ms(started),
+                        max_output_chars=policy.max_output_chars,
+                        execution=self._execution_telemetry(
+                            policy,
+                            workspace,
+                            None,
+                            tool_audit,
+                            sandbox_preflight_passed=sandbox_preflight_passed,
+                        ),
                     )
                 except (OSError, ValueError):
                     return self._failure(
