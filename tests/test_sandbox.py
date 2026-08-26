@@ -418,6 +418,14 @@ def test_documented_owner_only_install_remediates_a_group_writable_cli(
     sandbox.validate_cli_executable(target)
 
 
+def test_bwrap_validate_cli_executable_ignores_executables_outside_masked_roots() -> None:
+    # /usr/bin/true is below neither /tmp nor any host home on Linux or macOS,
+    # so there is no masked root to verify and validation is a no-op.
+    sandbox = BubblewrapSandbox(bwrap="/usr/bin/bwrap")
+
+    sandbox.validate_cli_executable(Path("/usr/bin/true"))
+
+
 def test_bwrap_wrapper_rejects_a_rebind_owned_by_another_user(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
