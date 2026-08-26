@@ -81,7 +81,11 @@ def _masked_root_for(executable: Path) -> Path | None:
 
     masked_roots = tuple(
         sorted(
-            {Path("/tmp"), *_host_home_directories()} - {Path("/")},
+            # python:S5443 flags the hard-coded /tmp masked root. This is not
+            # temporary-file creation: the literal is the exact mount point the
+            # Bubblewrap argv hides, and the rebind policy verifies owner,
+            # sticky bit, symlinks, and per-component writability before use.
+            {Path("/tmp"), *_host_home_directories()} - {Path("/")},  # NOSONAR
             key=lambda path: len(path.parts),
             reverse=True,
         )
