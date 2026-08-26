@@ -308,10 +308,17 @@ before any provider work begins and fails the task with
 `sandbox_cli_path_insecure` instead of a generic sandbox error; the resolved
 path is written to local stderr, never to MCP telemetry. The supported
 remediation is to keep native isolation on and point
-`TASKCHAMBER_CLAUDE_CLI_PATH` at an owner-only executable, for example a copy
-of the bundled CLI inside a `chmod 700` directory. TaskChamber never widens
-the check, never chmods the user home, and never falls back to an unsandboxed
-runtime on its own.
+`TASKCHAMBER_CLAUDE_CLI_PATH` at an owner-only executable. A plain `cp` is not
+enough, because it preserves a group-writable source mode such as `0664`; pin
+both the directory and the file mode instead:
+
+```bash
+install -d -m 700 "$HOME/.taskchamber-cli"
+install -m 700 /path/to/bundled/claude "$HOME/.taskchamber-cli/claude"
+```
+
+TaskChamber never widens the check, never chmods the user home, and never
+falls back to an unsandboxed runtime on its own.
 
 Virtual document sources are separate from this snapshot. Directory documents
 are read in place by the MCP server through bounded catalog operations; CLI

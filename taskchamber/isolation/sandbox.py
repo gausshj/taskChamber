@@ -140,7 +140,7 @@ class Sandbox:
 
         _reject_masked_paths(paths, ())
 
-    def validate_cli_executable(self, executable: Path) -> None:
+    def validate_cli_executable(self, _executable: Path) -> None:
         """Reject a resolved CLI this boundary cannot expose safely.
 
         The default staging behavior never hides the executable, so there is
@@ -149,7 +149,7 @@ class Sandbox:
         an actionable cause.
         """
 
-        return
+        pass
 
     @contextmanager
     def isolate(self, policy: ExecutionPolicy) -> Iterator[IsolatedWorkspace]:
