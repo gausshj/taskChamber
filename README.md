@@ -158,6 +158,7 @@ a second, manual configuration step to establish its maximum boundary:
 ```bash
 taskchamber config init
 taskchamber policy validate
+taskchamber doctor
 taskchamber policy show
 ```
 
@@ -165,6 +166,16 @@ The resulting `taskchamber.toml` contains no credential values. It controls the
 project capability ceiling, per-task allowed/default capabilities, relative
 workspace include/exclude patterns, and named document sources. The management
 CLI edits that same TOML atomically:
+
+`taskchamber doctor` is the deployment preflight. It makes no provider request
+and starts no agent task. It validates the effective configuration, selected
+runtime, resolved agent CLI, CLI path ownership and permissions under the
+selected sandbox, and the sandbox's operational probe. Its JSON output includes
+the actual TaskChamber entry point and package root, so an MCP deployment can run
+the exact configured command with `doctor` and reject an accidental old or
+different installation before registration. Exit status is zero only when every
+applicable check passes. Provider credentials and network reachability are not
+tested.
 
 ```bash
 taskchamber policy deny review documents.search
