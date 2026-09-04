@@ -16,6 +16,13 @@ class _InsecureCliSandbox(NoSandbox):
         raise InsecureCliPathError("configure an owner-only executable")
 
 
+class _UnavailableSandbox(NoSandbox):
+    name = "test-unavailable"
+
+    def preflight(self) -> bool:
+        return False
+
+
 def test_doctor_checks_fake_runtime_without_provider_call(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -43,6 +50,55 @@ def test_doctor_checks_fake_runtime_without_provider_call(
     }
     assert payload["checks"]["agent_cli"]["skipped"] is True
     assert Path(payload["taskchamber"]["package_root"]).name == "taskchamber"
+
+
+def test_doctor_reports_invalid_project_configuration(tmp_path: Path) -> None:
+    config = tmp_path / "taskchamber.toml"
+    config.write_text("not valid toml =", encoding="utf-8")
+
+    payload = deployment_report(
+        config_file=config,
+        environment={"TASKCHAMBER_RUNTIME": "fake", "TASKCHAMBER_SANDBOX": "none"},
+        working_directory=tmp_path,
+    )
+
+    assert payload["ok"] is False
+    assert payload["checks"]["configuration"]["error_code"] == "configuration_invalid"
+
+
+def test_doctor_reports_failed_sandbox_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "taskchamber.doctor.select_sandbox",
+        lambda _mode: _UnavailableSandbox(),
+    )
+
+    payload = deployment_report(
+        environment={"TASKCHAMBER_RUNTIME": "fake", "TASKCHAMBER_SANDBOX": "required"},
+        working_directory=tmp_path,
+    )
+
+    assert payload["ok"] is False
+    assert payload["checks"]["sandbox"] == {
+        "ok": False,
+        "error_code": "sandbox_unavailable",
+        "message": "selected sandbox 'test-unavailable' failed its operational preflight",
+        "requested": "required",
+    }
+
+
+def test_doctor_reports_an_unavailable_runtime(tmp_path: Path) -> None:
+    payload = deployment_report(
+        environment={"TASKCHAMBER_RUNTIME": "missing", "TASKCHAMBER_SANDBOX": "none"},
+        working_directory=tmp_path,
+    )
+
+    assert payload["ok"] is False
+    assert payload["checks"]["runtime"]["ok"] is False
+    assert payload["checks"]["runtime"]["error_code"] == "runtime_unavailable"
+    assert payload["checks"]["runtime"]["name"] == "missing"
 
 
 def test_doctor_validates_configured_claude_cli(
