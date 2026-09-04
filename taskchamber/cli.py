@@ -31,6 +31,7 @@ examples:
   taskchamber
   taskchamber serve
   taskchamber config init
+  taskchamber doctor
   taskchamber policy validate
   taskchamber policy show
 """
@@ -54,6 +55,7 @@ Use TASKCHAMBER_CONFIG_FILE or TASKCHAMBER_ENV_FILE to select another file.
 before serving:
   taskchamber config init
   taskchamber policy validate
+  taskchamber doctor
 
 example:
   TASKCHAMBER_RUNTIME=fake taskchamber serve
@@ -221,6 +223,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="replace the target file if it already exists",
     )
 
+    doctor = commands.add_parser(
+        "doctor",
+        help="check deployment readiness without calling a provider",
+        description=(
+            "Validate configuration, runtime, agent CLI, and sandbox readiness "
+            "without starting the MCP server or calling a provider."
+        ),
+        formatter_class=HELP_FORMATTER,
+    )
+    _add_config_argument(doctor)
+
     policy = commands.add_parser(
         "policy",
         help="inspect or edit project policy",
@@ -306,6 +319,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         if args.command == "config" and args.config_command == "init":
             _config_init(args.path, force=args.force)
+            return
+        if args.command == "doctor":
+            from .doctor import deployment_report
+
+            report = deployment_report(config_file=args.config)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            if not report["ok"]:
+                raise SystemExit(1)
             return
         if args.command == "policy":
             if args.policy_command == "show":

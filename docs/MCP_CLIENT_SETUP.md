@@ -27,8 +27,16 @@ For a concrete project, establish the maximum boundary before registration:
 ```bash
 taskchamber config init
 taskchamber policy validate
+taskchamber doctor
 taskchamber policy show
 ```
+
+Run `doctor` through the exact executable that the MCP configuration will use,
+with the same working directory and environment. It does not call the provider
+or start an agent task. A deployment should require exit status zero and may
+record the JSON fields `taskchamber.entrypoint`, `taskchamber.package_root`,
+`checks.agent_cli.path`, and `checks.sandbox` to prevent an unreviewed global
+installation or incompatible CLI path from replacing the reviewed runtime.
 
 The outer agent can read `taskchamber://capabilities` for redacted canonical
 capabilities, document aliases, parameter schemas, and examples. It may select

@@ -28,6 +28,7 @@ def test_root_help_explains_server_and_management_commands(
     assert "taskchamber serve" in output
     assert "taskchamber config init" in output
     assert "taskchamber policy validate" in output
+    assert "taskchamber doctor" in output
 
 
 def test_serve_help_documents_stdio_contract_without_starting_server(
@@ -52,6 +53,7 @@ def test_serve_help_documents_stdio_contract_without_starting_server(
     assert "TASKCHAMBER_CONFIG_FILE" in output
     assert "TASKCHAMBER_ENV_FILE" in output
     assert "TASKCHAMBER_RUNTIME=fake taskchamber serve" in output
+    assert "taskchamber doctor" in output
 
 
 @pytest.mark.parametrize(
@@ -70,6 +72,14 @@ def test_serve_help_documents_stdio_contract_without_starting_server(
                 "Create a documented TaskChamber project-policy template.",
                 "configuration file to create",
                 "replace the target file if it already exists",
+            ),
+        ),
+        (
+            ["doctor", "--help"],
+            (
+                "Validate configuration, runtime, agent CLI, and sandbox readiness",
+                "without starting the MCP server or calling a provider",
+                "explicit project policy file",
             ),
         ),
         (

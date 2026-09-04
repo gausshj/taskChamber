@@ -1,0 +1,125 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from taskchamber.cli import main
+from taskchamber.doctor import deployment_report
+from taskchamber.isolation import InsecureCliPathError, NoSandbox
+
+
+class _InsecureCliSandbox(NoSandbox):
+    name = "test-isolated"
+    os_isolated = True
+
+    def validate_cli_executable(self, _executable: Path) -> None:
+        raise InsecureCliPathError("configure an owner-only executable")
+
+
+def test_doctor_checks_fake_runtime_without_provider_call(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TASKCHAMBER_RUNTIME", "fake")
+    monkeypatch.setenv("TASKCHAMBER_SANDBOX", "none")
+    monkeypatch.delenv("TASKCHAMBER_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("TASKCHAMBER_ENV_FILE", raising=False)
+
+    main(["doctor"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "taskchamber.doctor.v1"
+    assert payload["ok"] is True
+    assert payload["checks"]["configuration"]["ok"] is True
+    assert payload["checks"]["runtime"]["name"] == "fake"
+    assert payload["checks"]["sandbox"] == {
+        "ok": True,
+        "requested": "none",
+        "selected": "none",
+        "os_isolated": False,
+        "preflight_passed": True,
+    }
+    assert payload["checks"]["agent_cli"]["skipped"] is True
+    assert Path(payload["taskchamber"]["package_root"]).name == "taskchamber"
+
+
+def test_doctor_validates_configured_claude_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = tmp_path / "cli" / "claude"
+    cli.parent.mkdir()
+    cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    cli.chmod(0o700)
+    environment = {
+        "TASKCHAMBER_RUNTIME": "claude",
+        "TASKCHAMBER_SANDBOX": "none",
+        "TASKCHAMBER_CLAUDE_CLI_PATH": str(cli),
+    }
+
+    payload = deployment_report(environment=environment, working_directory=tmp_path)
+
+    assert payload["ok"] is True
+    assert payload["checks"]["runtime"]["name"] == "claude"
+    assert payload["checks"]["agent_cli"] == {
+        "ok": True,
+        "source": "configured",
+        "path": str(cli.resolve()),
+        "sandbox_compatible": True,
+    }
+
+
+def test_doctor_returns_machine_readable_failure_for_bad_cli(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TASKCHAMBER_RUNTIME", "claude")
+    monkeypatch.setenv("TASKCHAMBER_SANDBOX", "none")
+    monkeypatch.setenv("TASKCHAMBER_CLAUDE_CLI_PATH", "relative/claude")
+    monkeypatch.delenv("TASKCHAMBER_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("TASKCHAMBER_ENV_FILE", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["doctor"])
+
+    assert exc_info.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["checks"]["agent_cli"]["error_code"] == "claude_cli_unavailable"
+    assert "not absolute" in payload["checks"]["agent_cli"]["message"]
+
+
+def test_doctor_reports_sandbox_incompatible_cli_before_provider_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = tmp_path / "cli" / "claude"
+    cli.parent.mkdir()
+    cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    cli.chmod(0o700)
+    monkeypatch.setattr(
+        "taskchamber.doctor.select_sandbox",
+        lambda _mode: _InsecureCliSandbox(),
+    )
+    environment = {
+        "TASKCHAMBER_RUNTIME": "claude",
+        "TASKCHAMBER_SANDBOX": "required",
+        "TASKCHAMBER_CLAUDE_CLI_PATH": str(cli),
+    }
+
+    payload = deployment_report(environment=environment, working_directory=tmp_path)
+
+    assert payload["ok"] is False
+    assert payload["checks"]["agent_cli"] == {
+        "ok": False,
+        "error_code": "sandbox_cli_path_insecure",
+        "message": "configure an owner-only executable",
+        "remediation": (
+            "set TASKCHAMBER_CLAUDE_CLI_PATH to an absolute owner-only executable "
+            "whose parent directories are not group/world-writable"
+        ),
+    }
