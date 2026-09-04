@@ -321,12 +321,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             _config_init(args.path, force=args.force)
             return
         if args.command == "doctor":
-            from .doctor import deployment_report
-
-            report = deployment_report(config_file=args.config)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            if not report["ok"]:
-                raise SystemExit(1)
+            _doctor(args.config)
             return
         if args.command == "policy":
             if args.policy_command == "show":
@@ -346,6 +341,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error("a command is required")
     except (OSError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")
+
+
+def _doctor(config_file: Path | None) -> None:
+    from .doctor import deployment_report
+
+    report = deployment_report(config_file=config_file)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report["ok"]:
+        raise SystemExit(1)
 
 
 def _config_init(path: Path, *, force: bool) -> None:

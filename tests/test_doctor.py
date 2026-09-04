@@ -93,6 +93,46 @@ def test_doctor_returns_machine_readable_failure_for_bad_cli(
     assert "not absolute" in payload["checks"]["agent_cli"]["message"]
 
 
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    (
+        (
+            "TASKCHAMBER_MCP_TEXT_MODE",
+            "bogus",
+            "must be one of",
+        ),
+        (
+            "TASKCHAMBER_MAX_SINGLE_PASS_DOCUMENT_BYTES",
+            "bogus",
+            "must be a positive integer",
+        ),
+        (
+            "TASKCHAMBER_DOCUMENT_SOURCES",
+            "INVALID-NAME",
+            "must contain lowercase source names",
+        ),
+    ),
+)
+def test_doctor_rejects_configuration_that_would_prevent_server_startup(
+    tmp_path: Path,
+    setting: str,
+    value: str,
+    message: str,
+) -> None:
+    environment = {
+        "TASKCHAMBER_RUNTIME": "fake",
+        "TASKCHAMBER_SANDBOX": "none",
+        setting: value,
+    }
+
+    payload = deployment_report(environment=environment, working_directory=tmp_path)
+
+    assert payload["ok"] is False
+    assert payload["checks"]["configuration"]["ok"] is False
+    assert payload["checks"]["configuration"]["error_code"] == "configuration_invalid"
+    assert message in payload["checks"]["configuration"]["message"]
+
+
 def test_doctor_reports_sandbox_incompatible_cli_before_provider_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

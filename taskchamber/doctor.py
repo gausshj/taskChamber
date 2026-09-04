@@ -10,9 +10,19 @@ from pathlib import Path
 from typing import Any
 
 from .application.composition import create_runtime_registry
-from .config import load_configuration, load_project_policy
+from .application.documents import build_document_source_registry
+from .config import (
+    ConfigurationBundle,
+    LoadedProjectPolicy,
+    load_configuration,
+    load_document_source_configs,
+    load_project_policy,
+)
+from .core.contracts import AgentRuntime
+from .core.service import ServerSettings, TaskService
 from .isolation import InsecureCliPathError, select_sandbox
 from .runtimes.registry import RuntimeFactoryContext
+from .transport.settings import MCPTransportSettings
 
 CLI_PATH_REMEDIATION = (
     "set TASKCHAMBER_CLAUDE_CLI_PATH to an absolute owner-only executable "
@@ -105,6 +115,15 @@ def deployment_report(
         "default_profile": runtime.default_profile,
     }
 
+    try:
+        _validate_server_configuration(configuration, loaded_policy, runtime)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        checks["configuration"] = {
+            **checks["configuration"],
+            **_failed("configuration_invalid", exc),
+        }
+        return report
+
     if runtime_name != "claude":
         checks["agent_cli"] = {
             "ok": True,
@@ -141,6 +160,35 @@ def deployment_report(
     }
     report["ok"] = True
     return report
+
+
+def _validate_server_configuration(
+    configuration: ConfigurationBundle,
+    loaded_policy: LoadedProjectPolicy,
+    runtime: AgentRuntime,
+) -> None:
+    """Exercise the same remaining configuration paths as MCP startup."""
+
+    settings = ServerSettings.from_mapping(
+        configuration.values,
+        default_profile=runtime.default_profile,
+        default_workspace_root=loaded_policy.workspace_root,
+    )
+    source_configs = dict(loaded_policy.document_sources)
+    source_configs.update(
+        load_document_source_configs(
+            configuration,
+            base_directory=settings.workspace_root,
+        )
+    )
+    document_sources = build_document_source_registry(source_configs, configuration)
+    TaskService(
+        runtime=runtime,
+        settings=settings,
+        document_sources=document_sources,
+        project_policy=loaded_policy.policy,
+    )
+    MCPTransportSettings.from_configuration(configuration)
 
 
 def _installation_identity() -> dict[str, str]:
