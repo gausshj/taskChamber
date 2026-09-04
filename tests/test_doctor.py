@@ -1,11 +1,14 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
+from taskchamber import doctor as doctor_module
 from taskchamber.cli import main
 from taskchamber.doctor import deployment_report
 from taskchamber.isolation import InsecureCliPathError, NoSandbox
+from taskchamber.runtimes.fake.runtime import FakeRuntime
 
 
 class _InsecureCliSandbox(NoSandbox):
@@ -21,6 +24,15 @@ class _UnavailableSandbox(NoSandbox):
 
     def preflight(self) -> bool:
         return False
+
+
+class _ClaudeRuntime(FakeRuntime):
+    name = "claude"
+
+
+class _ClaudeRuntimeRegistry:
+    def create(self, _name: str, _context: object) -> FakeRuntime:
+        return _ClaudeRuntime()
 
 
 def test_doctor_checks_fake_runtime_without_provider_call(
@@ -99,6 +111,60 @@ def test_doctor_reports_an_unavailable_runtime(tmp_path: Path) -> None:
     assert payload["checks"]["runtime"]["ok"] is False
     assert payload["checks"]["runtime"]["error_code"] == "runtime_unavailable"
     assert payload["checks"]["runtime"]["name"] == "missing"
+
+
+def test_doctor_reports_an_unavailable_claude_cli_module(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        doctor_module,
+        "create_runtime_registry",
+        lambda: _ClaudeRuntimeRegistry(),
+    )
+    monkeypatch.setitem(sys.modules, "taskchamber.runtimes.claude.cli", None)
+
+    payload = deployment_report(
+        environment={"TASKCHAMBER_RUNTIME": "claude", "TASKCHAMBER_SANDBOX": "none"},
+        working_directory=tmp_path,
+    )
+
+    assert payload["ok"] is False
+    assert payload["checks"]["agent_cli"]["error_code"] == "claude_cli_unavailable"
+
+
+def test_installation_identity_falls_back_for_a_source_tree_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def package_not_found(_distribution: str) -> str:
+        raise doctor_module.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(doctor_module.metadata, "version", package_not_found)
+    monkeypatch.setattr(sys, "argv", ["missing-taskchamber"])
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda _command: None)
+
+    identity = doctor_module._installation_identity()
+
+    assert identity["version"] == "source-tree"
+    assert identity["entrypoint"] == "missing-taskchamber"
+
+
+def test_installation_identity_resolves_an_entrypoint_from_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entrypoint = tmp_path / "taskchamber"
+    entrypoint.touch()
+    monkeypatch.setattr(sys, "argv", ["taskchamber"])
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda _command: str(entrypoint),
+    )
+
+    identity = doctor_module._installation_identity()
+
+    assert identity["entrypoint"] == str(entrypoint.resolve())
 
 
 def test_doctor_validates_configured_claude_cli(
