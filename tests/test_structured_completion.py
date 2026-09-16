@@ -799,8 +799,10 @@ async def test_cancellation_propagates_instead_of_becoming_a_result(
         query_function=cancelled_query,
     )
 
+    request = _request()
+    policy = _policy(tmp_path)
     with pytest.raises(asyncio.CancelledError):
-        await runtime.complete_structured(_request(), _policy(tmp_path))
+        await runtime.complete_structured(request, policy)
 
 
 @pytest.mark.anyio
