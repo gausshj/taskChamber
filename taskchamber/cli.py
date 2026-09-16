@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -32,6 +33,7 @@ examples:
   taskchamber serve
   taskchamber config init
   taskchamber doctor
+  taskchamber complete --request request.json
   taskchamber policy validate
   taskchamber policy show
 """
@@ -234,6 +236,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(doctor)
 
+    complete = commands.add_parser(
+        "complete",
+        help="run one tool-free structured completion",
+        description=(
+            "Run one tool-free structured completion from a JSON request file "
+            "and print the auditable result as JSON. The request supplies the "
+            "system instruction, prompt text, and JSON Schema; the server "
+            "configuration supplies the provider profile and limit ceilings."
+        ),
+        formatter_class=HELP_FORMATTER,
+    )
+    complete.add_argument(
+        "--request",
+        type=Path,
+        required=True,
+        help="JSON file with request_id, system_prompt, prompt, and json_schema",
+    )
+
     policy = commands.add_parser(
         "policy",
         help="inspect or edit project policy",
@@ -323,6 +343,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.command == "doctor":
             _doctor(args.config)
             return
+        if args.command == "complete":
+            _complete(args.request)
+            return
         if args.command == "policy":
             if args.policy_command == "show":
                 _policy_show(args.config)
@@ -349,6 +372,23 @@ def _doctor(config_file: Path | None) -> None:
     report = deployment_report(config_file=config_file)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if not report["ok"]:
+        raise SystemExit(1)
+
+
+def _complete(request_file: Path) -> None:
+    from .application.composition import create_default_completion_service
+    from .core.completion import StructuredCompletionRequest
+    from .core.contracts import TaskStatus
+
+    try:
+        payload = json.loads(request_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid completion request file: {exc}") from exc
+    request = StructuredCompletionRequest.model_validate(payload)
+    service = create_default_completion_service()
+    result = asyncio.run(service.complete(request))
+    print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    if result.status is not TaskStatus.SUCCESS:
         raise SystemExit(1)
 
 

@@ -11,6 +11,7 @@ from ..config import (
     load_document_source_configs,
     load_project_policy,
 )
+from ..core.completion import StructuredCompletionService
 from ..core.contracts import AgentRuntime
 from ..core.service import ServerSettings, TaskService
 from ..isolation import select_sandbox
@@ -112,7 +113,51 @@ def create_service_from_configuration(
     )
 
 
+def create_default_completion_service(
+    *,
+    environment: Mapping[str, str] | None = None,
+    env_file: Path | None = None,
+    working_directory: Path | None = None,
+    registry: RuntimeRegistry | None = None,
+) -> StructuredCompletionService:
+    launch_directory = (working_directory or Path.cwd()).expanduser().resolve()
+    configuration = load_configuration(
+        environment=environment,
+        env_file=env_file,
+        working_directory=launch_directory,
+    )
+    return create_completion_service_from_configuration(
+        configuration,
+        working_directory=launch_directory,
+        registry=registry,
+    )
+
+
+def create_completion_service_from_configuration(
+    configuration: ConfigurationBundle,
+    *,
+    working_directory: Path | None = None,
+    registry: RuntimeRegistry | None = None,
+) -> StructuredCompletionService:
+    """Build the structured completion service from a loaded bundle."""
+
+    launch_directory = (working_directory or Path.cwd()).expanduser().resolve()
+    loaded_policy = load_project_policy(
+        configuration,
+        working_directory=launch_directory,
+    )
+    runtime = create_runtime_from_configuration(configuration, registry=registry)
+    settings = ServerSettings.from_mapping(
+        configuration.values,
+        default_profile=runtime.default_profile,
+        default_workspace_root=loaded_policy.workspace_root,
+    )
+    return StructuredCompletionService(runtime=runtime, settings=settings)
+
+
 __all__ = [
+    "create_completion_service_from_configuration",
+    "create_default_completion_service",
     "create_default_service",
     "create_runtime_from_configuration",
     "create_runtime_from_environment",
