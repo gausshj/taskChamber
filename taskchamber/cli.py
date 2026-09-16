@@ -381,7 +381,11 @@ def _complete(request_file: Path) -> None:
     from .core.contracts import TaskStatus
 
     try:
-        payload = json.loads(request_file.read_text(encoding="utf-8"))
+        # pythonsecurity:S8707 flags the operator-supplied request path. This
+        # is a local management command, not an agent-reachable surface: the
+        # model never sees argv, and reading an explicit file the operator
+        # named is the intended behavior.
+        payload = json.loads(request_file.read_text(encoding="utf-8"))  # NOSONAR
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid completion request file: {exc}") from exc
     request = StructuredCompletionRequest.model_validate(payload)

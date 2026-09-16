@@ -619,6 +619,60 @@ class ClaudeAgentSdkRuntime:
         """
 
         started = time.monotonic()
+        prepared = self._prepare_completion(request, started=started)
+        if isinstance(prepared, StructuredCompletionResult):
+            return prepared
+        profile, executable = prepared
+        streamed = await self._stream_completion(
+            request,
+            policy,
+            profile=profile,
+            executable=executable,
+            started=started,
+        )
+        if isinstance(streamed, StructuredCompletionResult):
+            return streamed
+        final, observed_model = streamed
+        return self._normalize_completion(
+            request,
+            policy,
+            profile=profile,
+            final=final,
+            observed_model=observed_model,
+            started=started,
+        )
+
+    def _completion_failure(
+        self,
+        request: StructuredCompletionRequest,
+        *,
+        provider: str,
+        started: float,
+        status: TaskStatus,
+        error_code: str,
+        message: str,
+        model: str | None = None,
+    ) -> StructuredCompletionResult:
+        return StructuredCompletionResult(
+            request_id=request.request_id,
+            status=status,
+            runtime=self.name,
+            provider=provider,
+            model=model,
+            duration_ms=self._elapsed_ms(started),
+            error_code=error_code,
+            error_message=message,
+            sdk_version=_sdk_version(),
+        )
+
+    def _prepare_completion(
+        self,
+        request: StructuredCompletionRequest,
+        *,
+        started: float,
+    ) -> StructuredCompletionResult | tuple[ProviderProfile, ClaudeCliExecutable]:
+        """Validate provider, credential, sandbox, and CLI before any work."""
+
         provider_name = request.provider or self.default_profile
 
         def failure(
@@ -628,16 +682,14 @@ class ClaudeAgentSdkRuntime:
             message: str,
             model: str | None = None,
         ) -> StructuredCompletionResult:
-            return StructuredCompletionResult(
-                request_id=request.request_id,
-                status=status,
-                runtime=self.name,
+            return self._completion_failure(
+                request,
                 provider=provider_name,
-                model=model,
-                duration_ms=self._elapsed_ms(started),
+                started=started,
+                status=status,
                 error_code=error_code,
-                error_message=message,
-                sdk_version=_sdk_version(),
+                message=message,
+                model=model,
             )
 
         try:
@@ -676,7 +728,7 @@ class ClaudeAgentSdkRuntime:
                     self._configured_cli_path,
                     bundled_resolver=self._bundled_cli_resolver,
                 )
-        except (ClaudeCliUnavailableError, OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError):
             return failure(
                 status=TaskStatus.PROVIDER_UNAVAILABLE,
                 error_code="cli_unavailable",
@@ -712,9 +764,38 @@ class ClaudeAgentSdkRuntime:
                 ),
                 model=self._model_for(profile),
             )
+        return profile, executable
+
+    async def _stream_completion(
+        self,
+        request: StructuredCompletionRequest,
+        policy: ExecutionPolicy,
+        *,
+        profile: ProviderProfile,
+        executable: ClaudeCliExecutable,
+        started: float,
+    ) -> StructuredCompletionResult | tuple[ResultMessage, str | None]:
+        """Run the isolated SDK query and return its final result message."""
 
         observed_model: str | None = None
         final: ResultMessage | None = None
+
+        def failure(
+            *,
+            status: TaskStatus,
+            error_code: str,
+            message: str,
+        ) -> StructuredCompletionResult:
+            return self._completion_failure(
+                request,
+                provider=profile.name,
+                started=started,
+                status=status,
+                error_code=error_code,
+                message=message,
+                model=self._model_for(profile) or observed_model,
+            )
+
         with TemporaryDirectory(prefix="taskchamber-") as temp_dir:
             task_dir = Path(temp_dir)
             config_dir = task_dir / "config"
@@ -732,14 +813,12 @@ class ClaudeAgentSdkRuntime:
                         status=TaskStatus.FAILED,
                         error_code="sandbox_cli_path_insecure",
                         message=_INSECURE_CLI_PATH_MESSAGE,
-                        model=self._model_for(profile),
                     )
                 except (OSError, ValueError):
                     return failure(
                         status=TaskStatus.FAILED,
                         error_code="sandbox_setup_failed",
                         message=("The runtime could not establish the requested CLI boundary."),
-                        model=self._model_for(profile),
                     )
                 # build_options reads only the provider from its task request;
                 # the synthetic value is never surfaced in the result.
@@ -771,7 +850,6 @@ class ClaudeAgentSdkRuntime:
                         status=TaskStatus.TIMED_OUT,
                         error_code="timeout",
                         message="The completion exceeded the configured time limit.",
-                        model=self._model_for(profile) or observed_model,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -781,7 +859,6 @@ class ClaudeAgentSdkRuntime:
                             status=TaskStatus.FAILED,
                             error_code="runtime_error",
                             message="The agent runtime could not complete the request.",
-                            model=self._model_for(profile) or observed_model,
                         )
                     # A final ResultMessage arrived before the SDK raised; map
                     # that result below instead of a generic runtime error.
@@ -795,19 +872,35 @@ class ClaudeAgentSdkRuntime:
                 status=TaskStatus.FAILED,
                 error_code="missing_result",
                 message="The agent runtime ended without a final result.",
-                model=self._model_for(profile) or observed_model,
             )
+        return final, observed_model
+
+    def _normalize_completion(
+        self,
+        request: StructuredCompletionRequest,
+        policy: ExecutionPolicy,
+        *,
+        profile: ProviderProfile,
+        final: ResultMessage,
+        observed_model: str | None,
+        started: float,
+    ) -> StructuredCompletionResult:
+        """Map the final SDK result onto the structured completion contract."""
 
         status = self._status_for(final)
+        model = self._model_for(profile) or observed_model
         if status is TaskStatus.SUCCESS and final.structured_output is None:
-            return failure(
+            return self._completion_failure(
+                request,
+                provider=profile.name,
+                started=started,
                 status=TaskStatus.FAILED,
                 error_code="structured_output_missing",
                 message=(
                     "The provider returned no structured output for the supplied "
                     "schema; unconstrained text is never reported as success."
                 ),
-                model=self._model_for(profile) or observed_model,
+                model=model,
             )
 
         raw_text = final.result or ""
@@ -817,7 +910,7 @@ class ClaudeAgentSdkRuntime:
             status=status,
             runtime=self.name,
             provider=profile.name,
-            model=self._model_for(profile) or observed_model,
+            model=model,
             output=final.structured_output,
             raw_result_text=self._truncate(raw_text, policy) if raw_text else None,
             usage=self._token_usage(final.usage),

@@ -222,8 +222,10 @@ async def test_nested_and_null_fields_survive_without_rewriting(tmp_path: Path) 
     assert result.raw_result_text == '{"answer": "structured"}'
     assert result.num_turns == 2
     assert result.cost_usd == 0.0042
-    assert result.usage is not None and result.usage.input_tokens == 10
-    assert result.model_usage is not None and "model-x" in result.model_usage
+    assert result.usage is not None
+    assert result.usage.input_tokens == 10
+    assert result.model_usage is not None
+    assert "model-x" in result.model_usage
     assert result.sdk_version is not None
     assert result.error_code is None
 
