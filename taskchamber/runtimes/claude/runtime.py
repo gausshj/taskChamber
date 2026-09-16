@@ -10,6 +10,7 @@ import time
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -29,10 +30,15 @@ from ...config import (
     SecretProvider,
     secret_references,
 )
+from ...core.completion import (
+    StructuredCompletionRequest,
+    StructuredCompletionResult,
+)
 from ...core.contracts import (
     AgentCapabilities,
     ExecutionPolicy,
     ExecutionTelemetry,
+    TaskKind,
     TaskRequest,
     TaskResult,
     TaskStatus,
@@ -109,6 +115,20 @@ _INSECURE_CLI_PATH_MESSAGE = (
     "owner-only executable."
 )
 
+# The SDK delivers output_format results through this synthetic internal tool;
+# it is not a workspace or document capability and must survive a zero-tool
+# guard for structured completion to work at all.
+_STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+
+
+def _sdk_version() -> str | None:
+    """Return the installed SDK package version for audit metadata."""
+
+    try:
+        return metadata.version("claude-agent-sdk")
+    except metadata.PackageNotFoundError:
+        return None
+
 
 @dataclass(frozen=True)
 class _CliLaunch:
@@ -144,7 +164,7 @@ class ClaudeAgentSdkRuntime:
         read_documents=True,
         cancellation=True,
         progress=False,
-        structured_output=False,
+        structured_output=True,
     )
 
     def __init__(
@@ -191,6 +211,8 @@ class ClaudeAgentSdkRuntime:
         workspace: IsolatedWorkspace | None = None,
         cli_path: str | None = None,
         tool_audit: list[ToolCallRecord] | None = None,
+        output_format: dict[str, Any] | None = None,
+        internal_tools: frozenset[str] = frozenset(),
     ) -> ClaudeAgentOptions:
         """Construct the SDK options in one inspectable, testable location.
 
@@ -247,6 +269,7 @@ class ClaudeAgentSdkRuntime:
                                 guard,
                                 tool_audit,
                                 document_tools=frozenset(document_tools),
+                                internal_tools=internal_tools,
                             )
                         ],
                     )
@@ -254,6 +277,7 @@ class ClaudeAgentSdkRuntime:
             },
             extra_args={"no-session-persistence": None},
             stderr=lambda _message: None,
+            output_format=output_format,
         )
 
     def environment_for(self, profile: ProviderProfile, *, config_dir: Path) -> dict[str, str]:
@@ -588,6 +612,331 @@ class ClaudeAgentSdkRuntime:
             ),
         )
 
+    async def complete_structured(
+        self,
+        request: StructuredCompletionRequest,
+        policy: ExecutionPolicy,
+    ) -> StructuredCompletionResult:
+        """Run one tool-free completion honoring the request's JSON Schema.
+
+        The flow reuses the task pipeline's provider, credential, CLI, and
+        sandbox boundaries, but no preset, workspace, document, or tool access
+        is exposed: the SDK receives only the caller's instruction, prompt, and
+        schema, and a successful result must carry parsed structured output.
+        """
+
+        started = time.monotonic()
+        prepared = self._prepare_completion(request, started=started)
+        if isinstance(prepared, StructuredCompletionResult):
+            return prepared
+        profile, executable = prepared
+        streamed = await self._stream_completion(
+            request,
+            policy,
+            profile=profile,
+            executable=executable,
+            started=started,
+        )
+        if isinstance(streamed, StructuredCompletionResult):
+            return streamed
+        final, observed_model = streamed
+        return self._normalize_completion(
+            request,
+            policy,
+            profile=profile,
+            final=final,
+            observed_model=observed_model,
+            started=started,
+        )
+
+    def _completion_failure(
+        self,
+        request: StructuredCompletionRequest,
+        *,
+        provider: str,
+        started: float,
+        status: TaskStatus,
+        error_code: str,
+        message: str,
+        model: str | None = None,
+    ) -> StructuredCompletionResult:
+        return StructuredCompletionResult(
+            request_id=request.request_id,
+            status=status,
+            runtime=self.name,
+            provider=provider,
+            model=model,
+            duration_ms=self._elapsed_ms(started),
+            error_code=error_code,
+            error_message=message,
+            sdk_version=_sdk_version(),
+        )
+
+    def _prepare_completion(
+        self,
+        request: StructuredCompletionRequest,
+        *,
+        started: float,
+    ) -> StructuredCompletionResult | tuple[ProviderProfile, ClaudeCliExecutable]:
+        """Validate provider, credential, sandbox, and CLI before any work."""
+
+        provider_name = request.provider or self.default_profile
+
+        def failure(
+            *,
+            status: TaskStatus,
+            error_code: str,
+            message: str,
+            model: str | None = None,
+        ) -> StructuredCompletionResult:
+            return self._completion_failure(
+                request,
+                provider=provider_name,
+                started=started,
+                status=status,
+                error_code=error_code,
+                message=message,
+                model=model,
+            )
+
+        try:
+            profile = self._provider_for(provider_name)
+        except ProviderSelectionError as exc:
+            return failure(
+                status=TaskStatus.PROVIDER_UNAVAILABLE,
+                error_code=exc.code,
+                message=str(exc),
+            )
+        provider_name = profile.name
+        if self._secrets.get(profile.credential_ref) is None:
+            return failure(
+                status=TaskStatus.PROVIDER_UNAVAILABLE,
+                error_code="missing_credential",
+                message="The requested provider credential is not available.",
+                model=self._model_for(profile),
+            )
+
+        if self._sandbox.os_isolated and not self._sandbox.preflight():
+            return failure(
+                status=TaskStatus.FAILED,
+                error_code="sandbox_unavailable",
+                message="The requested OS sandbox is unavailable.",
+                model=self._model_for(profile),
+            )
+
+        try:
+            if self._legacy_cli_resolver is not None:
+                executable = resolve_claude_cli(
+                    self._legacy_cli_resolver("claude"),
+                    bundled_resolver=lambda: None,
+                )
+            else:
+                executable = resolve_claude_cli(
+                    self._configured_cli_path,
+                    bundled_resolver=self._bundled_cli_resolver,
+                )
+        except (OSError, RuntimeError, ValueError):
+            return failure(
+                status=TaskStatus.PROVIDER_UNAVAILABLE,
+                error_code="cli_unavailable",
+                message=(
+                    "The Claude CLI is unavailable; install the pinned SDK wheel or "
+                    "configure an explicit executable."
+                ),
+                model=self._model_for(profile),
+            )
+
+        try:
+            self._sandbox.validate_cli_executable(executable.path)
+        except InsecureCliPathError as exc:
+            print(
+                f"taskchamber: insecure Claude CLI path {executable.path}: {exc}",
+                file=sys.stderr,
+            )
+            return failure(
+                status=TaskStatus.FAILED,
+                error_code="sandbox_cli_path_insecure",
+                message=_INSECURE_CLI_PATH_MESSAGE,
+                model=self._model_for(profile),
+            )
+
+        try:
+            self._sandbox.validate_readable_paths(self._forwarded_environment_paths())
+        except ValueError:
+            return failure(
+                status=TaskStatus.FAILED,
+                error_code="cli_environment_invalid",
+                message=(
+                    "A forwarded CLI certificate path is unavailable inside the selected boundary."
+                ),
+                model=self._model_for(profile),
+            )
+        return profile, executable
+
+    async def _stream_completion(
+        self,
+        request: StructuredCompletionRequest,
+        policy: ExecutionPolicy,
+        *,
+        profile: ProviderProfile,
+        executable: ClaudeCliExecutable,
+        started: float,
+    ) -> StructuredCompletionResult | tuple[ResultMessage, str | None]:
+        """Run the isolated SDK query and return its final result message."""
+
+        observed_model: str | None = None
+        final: ResultMessage | None = None
+
+        def failure(
+            *,
+            status: TaskStatus,
+            error_code: str,
+            message: str,
+        ) -> StructuredCompletionResult:
+            return self._completion_failure(
+                request,
+                provider=profile.name,
+                started=started,
+                status=status,
+                error_code=error_code,
+                message=message,
+                model=observed_model or self._model_for(profile),
+            )
+
+        with TemporaryDirectory(prefix="taskchamber-") as temp_dir:
+            task_dir = Path(temp_dir)
+            config_dir = task_dir / "config"
+            launcher_dir = task_dir / "launcher"
+            with self._sandbox.isolate(policy) as workspace:
+                try:
+                    launch = self._prepare_cli_launch(
+                        workspace,
+                        config_dir=config_dir,
+                        launcher_dir=launcher_dir,
+                        executable=executable,
+                    )
+                except InsecureCliPathError:
+                    return failure(
+                        status=TaskStatus.FAILED,
+                        error_code="sandbox_cli_path_insecure",
+                        message=_INSECURE_CLI_PATH_MESSAGE,
+                    )
+                except (OSError, ValueError):
+                    return failure(
+                        status=TaskStatus.FAILED,
+                        error_code="sandbox_setup_failed",
+                        message=("The runtime could not establish the requested CLI boundary."),
+                    )
+                # build_options reads only the provider from its task request;
+                # the synthetic value is never surfaced in the result.
+                synthetic = TaskRequest(
+                    run_id=request.request_id,
+                    kind=TaskKind.RESEARCH,
+                    prompt=request.prompt,
+                    provider=profile.name,
+                    max_turns=policy.max_turns,
+                )
+                options = self.build_options(
+                    synthetic,
+                    policy,
+                    config_dir=config_dir,
+                    workspace=workspace,
+                    cli_path=str(launch.path),
+                    output_format={"type": "json_schema", "schema": request.json_schema},
+                    internal_tools=frozenset({_STRUCTURED_OUTPUT_TOOL}),
+                )
+                stream = self._query_function(prompt=request.prompt, options=options)
+                try:
+                    async with asyncio.timeout(policy.timeout_seconds):
+                        async for message in stream:
+                            if isinstance(message, AssistantMessage):
+                                observed_model = message.model or observed_model
+                            elif isinstance(message, ResultMessage):
+                                final = message
+                except TimeoutError:
+                    return failure(
+                        status=TaskStatus.TIMED_OUT,
+                        error_code="timeout",
+                        message="The completion exceeded the configured time limit.",
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    if final is None:
+                        return failure(
+                            status=TaskStatus.FAILED,
+                            error_code="runtime_error",
+                            message="The agent runtime could not complete the request.",
+                        )
+                    # A final ResultMessage arrived before the SDK raised; map
+                    # that result below instead of a generic runtime error.
+                finally:
+                    close = getattr(stream, "aclose", None)
+                    if close is not None:
+                        await close()
+
+        if final is None:
+            return failure(
+                status=TaskStatus.FAILED,
+                error_code="missing_result",
+                message="The agent runtime ended without a final result.",
+            )
+        return final, observed_model
+
+    def _normalize_completion(
+        self,
+        request: StructuredCompletionRequest,
+        policy: ExecutionPolicy,
+        *,
+        profile: ProviderProfile,
+        final: ResultMessage,
+        observed_model: str | None,
+        started: float,
+    ) -> StructuredCompletionResult:
+        """Map the final SDK result onto the structured completion contract."""
+
+        status = self._status_for(final)
+        # The observed model wins: aliases and gateway mappings make the
+        # configured name an unreliable attribution.
+        model = observed_model or self._model_for(profile)
+        structured_missing = status is TaskStatus.SUCCESS and final.structured_output is None
+        if structured_missing:
+            status = TaskStatus.FAILED
+
+        raw_text = final.result or ""
+        truncated = len(raw_text) > policy.max_output_chars
+        if structured_missing:
+            error_code = "structured_output_missing"
+            error_message = (
+                "The provider returned no structured output for the supplied "
+                "schema; unconstrained text is never reported as success."
+            )
+        elif status is TaskStatus.SUCCESS:
+            error_code = None
+            error_message = None
+        else:
+            error_code = self._error_code_for(status)
+            error_message = self._error_message_for(status)
+        return StructuredCompletionResult(
+            request_id=request.request_id,
+            status=status,
+            runtime=self.name,
+            provider=profile.name,
+            model=model,
+            output=final.structured_output,
+            raw_result_text=self._truncate(raw_text, policy) if raw_text else None,
+            usage=self._token_usage(final.usage),
+            model_usage=self._model_token_usage(final.model_usage),
+            num_turns=final.num_turns,
+            cost_usd=final.total_cost_usd,
+            duration_ms=max(final.duration_ms, self._elapsed_ms(started)),
+            partial=(status is not TaskStatus.SUCCESS and bool(raw_text)) or truncated,
+            truncated=truncated,
+            error_code=error_code,
+            error_message=error_message,
+            sdk_version=_sdk_version(),
+        )
+
     def _provider_for(self, name: str) -> ProviderProfile:
         try:
             profile = self._providers[name]
@@ -769,6 +1118,7 @@ class ClaudeAgentSdkRuntime:
         tool_audit: list[ToolCallRecord] | None = None,
         *,
         document_tools: frozenset[str] = frozenset(),
+        internal_tools: frozenset[str] = frozenset(),
     ) -> Callable[[Any, str | None, Any], Any]:
         async def enforce(
             input_data: Any,
@@ -777,7 +1127,7 @@ class ClaudeAgentSdkRuntime:
         ) -> dict[str, Any]:
             tool_name = input_data.get("tool_name") if isinstance(input_data, dict) else None
             tool = tool_name if isinstance(tool_name, str) and tool_name else "unknown"
-            if tool in document_tools:
+            if tool in document_tools or tool in internal_tools:
                 if tool_audit is not None:
                     tool_audit.append(ToolCallRecord(tool=tool, decision=ToolCallDecision.ALLOWED))
                 return {}

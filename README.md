@@ -124,6 +124,50 @@ never aborts a task. A host may opt in to the Claude Agent SDK hard-stop by
 setting `TASKCHAMBER_MAX_BUDGET_USD` to a positive number; turn, timeout,
 output-size, document-size, and concurrency limits always remain in force.
 
+## Structured completion
+
+Besides the three MCP task tools, TaskChamber exposes an opt-in, tool-free
+structured completion capability for callers that need a frozen prompt answered
+against a caller-supplied JSON Schema. It is a library and CLI entry point,
+not an MCP tool, and it changes none of the existing tool behaviors.
+
+```bash
+taskchamber complete --request request.json
+```
+
+The request file supplies an opaque `request_id` (echoed back), an explicit
+`system_prompt`, the `prompt` text, and a `json_schema`; provider, turn,
+timeout, and output limits may only narrow the server ceilings. The completion
+runs fresh and stateless through the same isolated Claude CLI boundary as the
+task tools, but exposes no workspace, document, or tool access — the provider
+receives only the supplied instruction, text, and schema, and the schema
+reaches the SDK unchanged as `output_format`.
+
+The JSON result carries the echoed request ID, explicit status, the parsed
+structured `output` (null on failure, never unconstrained prose relabeled as
+success), the bounded `raw_result_text` envelope, observed model/provider,
+`usage`/`model_usage`/`num_turns`/`cost_usd` telemetry, `duration_ms`,
+`partial`/`truncated` flags, the applied `effective_*` limits, the SDK
+version, and a stable `error_code`. A runtime without the capability fails
+with `structured_output_unsupported`; a successful SDK result without
+structured output fails with `structured_output_missing`; timeouts, turn
+limits, and provider errors stay explicit. The CLI exits 0 on success, 1 on a
+failed completion, and 2 on an invalid request.
+
+The same capability is available as a library:
+
+```python
+from taskchamber.application.composition import create_default_completion_service
+from taskchamber.core.completion import StructuredCompletionRequest
+
+service = create_default_completion_service()
+result = await service.complete(StructuredCompletionRequest.model_validate(payload))
+```
+
+Contract and error paths are covered by stubbed SDK tests. A live provider
+smoke test is performed separately; only provider/model pairs verified there
+should be considered supported for structured output.
+
 ## Local setup
 
 ```bash

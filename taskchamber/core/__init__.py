@@ -1,5 +1,11 @@
 """Provider-neutral task contracts, policy, and orchestration service."""
 
+from .completion import (
+    StructuredCompletionRequest,
+    StructuredCompletionResult,
+    StructuredCompletionRuntime,
+    StructuredCompletionService,
+)
 from .contracts import (
     AgentCapabilities,
     AgentRuntime,
@@ -50,6 +56,10 @@ __all__ = [
     "ExecutionPolicy",
     "PreparedDocumentSource",
     "ServerSettings",
+    "StructuredCompletionRequest",
+    "StructuredCompletionResult",
+    "StructuredCompletionRuntime",
+    "StructuredCompletionService",
     "TaskKind",
     "TaskRequest",
     "TaskResult",
