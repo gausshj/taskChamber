@@ -2,10 +2,11 @@
 
 import asyncio
 import json
+from importlib import metadata
 from pathlib import Path
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock
 
 from taskchamber.cli import main as cli_main
 from taskchamber.core.completion import (
@@ -784,6 +785,62 @@ def test_cli_complete_exits_one_on_a_failed_completion(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "failed"
     assert payload["error_code"] == "custom_failure"
+
+
+@pytest.mark.anyio
+async def test_completion_succeeds_without_sdk_version_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_version(package_name: str) -> str:
+        assert package_name == "claude-agent-sdk"
+        raise metadata.PackageNotFoundError(package_name)
+
+    async def fake_query(**kwargs: object) -> object:
+        yield _result_message(structured_output={"answer": "ok"})
+
+    runtime = ClaudeAgentSdkRuntime(
+        environment={"Z_AI_API_KEY": "test-token"},
+        query_function=fake_query,
+    )
+    monkeypatch.setattr(
+        "taskchamber.runtimes.claude.runtime.metadata.version",
+        missing_version,
+    )
+
+    result = await runtime.complete_structured(_request(), _policy(tmp_path))
+
+    assert result.status is TaskStatus.SUCCESS
+    assert result.output == {"answer": "ok"}
+    assert result.sdk_version is None
+    assert result.error_code is None
+    assert result.usage is not None
+    assert result.usage.input_tokens == 10
+
+
+@pytest.mark.anyio
+async def test_system_messages_do_not_interrupt_structured_completion(tmp_path: Path) -> None:
+    async def fake_query(**kwargs: object) -> object:
+        yield SystemMessage(subtype="init", data={"session_id": "completion-session"})
+        yield AssistantMessage(
+            content=[TextBlock(text="intermediate")],
+            model="observed-model",
+        )
+        yield SystemMessage(subtype="status", data={"status": None})
+        yield _result_message(structured_output={"answer": "ok"})
+
+    runtime = ClaudeAgentSdkRuntime(
+        environment={"Z_AI_API_KEY": "test-token"},
+        query_function=fake_query,
+    )
+
+    result = await runtime.complete_structured(_request(), _policy(tmp_path))
+
+    assert result.status is TaskStatus.SUCCESS
+    assert result.request_id == "req-1"
+    assert result.output == {"answer": "ok"}
+    assert result.model == "observed-model"
+    assert result.error_code is None
 
 
 @pytest.mark.anyio
