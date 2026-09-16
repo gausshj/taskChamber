@@ -115,6 +115,11 @@ _INSECURE_CLI_PATH_MESSAGE = (
     "owner-only executable."
 )
 
+# The SDK delivers output_format results through this synthetic internal tool;
+# it is not a workspace or document capability and must survive a zero-tool
+# guard for structured completion to work at all.
+_STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+
 
 def _sdk_version() -> str | None:
     """Return the installed SDK package version for audit metadata."""
@@ -207,6 +212,7 @@ class ClaudeAgentSdkRuntime:
         cli_path: str | None = None,
         tool_audit: list[ToolCallRecord] | None = None,
         output_format: dict[str, Any] | None = None,
+        internal_tools: frozenset[str] = frozenset(),
     ) -> ClaudeAgentOptions:
         """Construct the SDK options in one inspectable, testable location.
 
@@ -263,6 +269,7 @@ class ClaudeAgentSdkRuntime:
                                 guard,
                                 tool_audit,
                                 document_tools=frozenset(document_tools),
+                                internal_tools=internal_tools,
                             )
                         ],
                     )
@@ -793,7 +800,7 @@ class ClaudeAgentSdkRuntime:
                 status=status,
                 error_code=error_code,
                 message=message,
-                model=self._model_for(profile) or observed_model,
+                model=observed_model or self._model_for(profile),
             )
 
         with TemporaryDirectory(prefix="taskchamber-") as temp_dir:
@@ -836,6 +843,7 @@ class ClaudeAgentSdkRuntime:
                     workspace=workspace,
                     cli_path=str(launch.path),
                     output_format={"type": "json_schema", "schema": request.json_schema},
+                    internal_tools=frozenset({_STRUCTURED_OUTPUT_TOOL}),
                 )
                 stream = self._query_function(prompt=request.prompt, options=options)
                 try:
@@ -888,23 +896,27 @@ class ClaudeAgentSdkRuntime:
         """Map the final SDK result onto the structured completion contract."""
 
         status = self._status_for(final)
-        model = self._model_for(profile) or observed_model
-        if status is TaskStatus.SUCCESS and final.structured_output is None:
-            return self._completion_failure(
-                request,
-                provider=profile.name,
-                started=started,
-                status=TaskStatus.FAILED,
-                error_code="structured_output_missing",
-                message=(
-                    "The provider returned no structured output for the supplied "
-                    "schema; unconstrained text is never reported as success."
-                ),
-                model=model,
-            )
+        # The observed model wins: aliases and gateway mappings make the
+        # configured name an unreliable attribution.
+        model = observed_model or self._model_for(profile)
+        structured_missing = status is TaskStatus.SUCCESS and final.structured_output is None
+        if structured_missing:
+            status = TaskStatus.FAILED
 
         raw_text = final.result or ""
         truncated = len(raw_text) > policy.max_output_chars
+        if structured_missing:
+            error_code = "structured_output_missing"
+            error_message = (
+                "The provider returned no structured output for the supplied "
+                "schema; unconstrained text is never reported as success."
+            )
+        elif status is TaskStatus.SUCCESS:
+            error_code = None
+            error_message = None
+        else:
+            error_code = self._error_code_for(status)
+            error_message = self._error_message_for(status)
         return StructuredCompletionResult(
             request_id=request.request_id,
             status=status,
@@ -920,10 +932,8 @@ class ClaudeAgentSdkRuntime:
             duration_ms=max(final.duration_ms, self._elapsed_ms(started)),
             partial=(status is not TaskStatus.SUCCESS and bool(raw_text)) or truncated,
             truncated=truncated,
-            error_code=None if status is TaskStatus.SUCCESS else self._error_code_for(status),
-            error_message=(
-                None if status is TaskStatus.SUCCESS else self._error_message_for(status)
-            ),
+            error_code=error_code,
+            error_message=error_message,
             sdk_version=_sdk_version(),
         )
 
@@ -1108,6 +1118,7 @@ class ClaudeAgentSdkRuntime:
         tool_audit: list[ToolCallRecord] | None = None,
         *,
         document_tools: frozenset[str] = frozenset(),
+        internal_tools: frozenset[str] = frozenset(),
     ) -> Callable[[Any, str | None, Any], Any]:
         async def enforce(
             input_data: Any,
@@ -1116,7 +1127,7 @@ class ClaudeAgentSdkRuntime:
         ) -> dict[str, Any]:
             tool_name = input_data.get("tool_name") if isinstance(input_data, dict) else None
             tool = tool_name if isinstance(tool_name, str) and tool_name else "unknown"
-            if tool in document_tools:
+            if tool in document_tools or tool in internal_tools:
                 if tool_audit is not None:
                     tool_audit.append(ToolCallRecord(tool=tool, decision=ToolCallDecision.ALLOWED))
                 return {}

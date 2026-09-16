@@ -283,7 +283,14 @@ async def test_success_result_without_structured_output_is_explicit_failure(
     tmp_path: Path,
 ) -> None:
     async def fake_query(**kwargs: object) -> object:
-        yield _result_message(structured_output=None, result="unconstrained prose")
+        yield _result_message(
+            structured_output=None,
+            result="unconstrained prose",
+            num_turns=3,
+            total_cost_usd=0.0123,
+            usage={"input_tokens": 123, "output_tokens": 45},
+            model_usage={"model-x": {"input_tokens": 123, "output_tokens": 45}},
+        )
 
     runtime = ClaudeAgentSdkRuntime(
         environment={"Z_AI_API_KEY": "test-token"},
@@ -295,6 +302,16 @@ async def test_success_result_without_structured_output_is_explicit_failure(
     assert result.status is TaskStatus.FAILED
     assert result.error_code == "structured_output_missing"
     assert result.output is None
+    # The invocation data already produced is preserved for cost accounting
+    # and compatibility debugging.
+    assert result.raw_result_text == "unconstrained prose"
+    assert result.num_turns == 3
+    assert result.cost_usd == 0.0123
+    assert result.usage is not None
+    assert result.usage.input_tokens == 123
+    assert result.usage.output_tokens == 45
+    assert result.model_usage is not None
+    assert "model-x" in result.model_usage
 
 
 @pytest.mark.anyio
@@ -772,7 +789,10 @@ def test_cli_complete_exits_one_on_a_failed_completion(
 @pytest.mark.anyio
 async def test_observed_model_comes_from_assistant_messages(tmp_path: Path) -> None:
     async def fake_query(**kwargs: object) -> object:
-        yield AssistantMessage(content=[TextBlock(text="intermediate")], model="observed-model")
+        yield AssistantMessage(
+            content=[TextBlock(text="intermediate")],
+            model="actually-observed-model",
+        )
         yield _result_message(structured_output={"answer": "ok"})
 
     runtime = ClaudeAgentSdkRuntime(
@@ -783,7 +803,51 @@ async def test_observed_model_comes_from_assistant_messages(tmp_path: Path) -> N
     result = await runtime.complete_structured(_request(), _policy(tmp_path))
 
     assert result.status is TaskStatus.SUCCESS
-    assert result.model is not None
+    # The observed model wins over the configured profile model.
+    assert result.model == "actually-observed-model"
+
+
+@pytest.mark.anyio
+async def test_completion_hook_allows_internal_structured_output_only(
+    tmp_path: Path,
+) -> None:
+    hook_decisions: list[dict[str, object]] = []
+
+    async def fake_query(**kwargs: object) -> object:
+        options = kwargs["options"]
+        hook = options.hooks["PreToolUse"][0].hooks[0]
+        # The SDK delivers output_format results through this internal call;
+        # it must survive the zero-tool guard.
+        hook_decisions.append(
+            await hook(
+                {
+                    "tool_name": "StructuredOutput",
+                    "tool_input": {"answer": "ok"},
+                },
+                None,
+                {},
+            )
+        )
+        # Real tools stay denied in the tool-free completion mode.
+        hook_decisions.append(
+            await hook(
+                {"tool_name": "Read", "tool_input": {"file_path": "x.py"}},
+                None,
+                {},
+            )
+        )
+        yield _result_message(structured_output={"answer": "ok"})
+
+    runtime = ClaudeAgentSdkRuntime(
+        environment={"Z_AI_API_KEY": "test-token"},
+        query_function=fake_query,
+    )
+
+    result = await runtime.complete_structured(_request(), _policy(tmp_path))
+
+    assert result.status is TaskStatus.SUCCESS
+    assert hook_decisions[0] == {}
+    assert hook_decisions[1]["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
 
 
 @pytest.mark.anyio
